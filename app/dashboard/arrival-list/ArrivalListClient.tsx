@@ -252,6 +252,7 @@ export default function ArrivalListClient() {
   // Multi-select for marking several items received.
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [receiveOpen, setReceiveOpen] = useState(false)
+  const [notReceivedOpen, setNotReceivedOpen] = useState(false)
 
   const fetchItems = useCallback((event?: string, silent = false) => {
     if (!silent) setLoading(true)
@@ -641,6 +642,18 @@ export default function ArrivalListClient() {
                 </svg>
               ),
             },
+            {
+              label: "Not Received",
+              color: "amber",
+              onClick: () => setNotReceivedOpen(true),
+              icon: (
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              ),
+            },
           ]}
         />
       )}
@@ -650,6 +663,23 @@ export default function ArrivalListClient() {
           items={selectedItems}
           onClose={() => setReceiveOpen(false)}
           onSuccess={() => { clearSelection(); setReceiveOpen(false); handleArrivedSuccess() }}
+          onPartial={(succeededKeys) => {
+            setSelected((prev) => {
+              const next = new Set(prev)
+              for (const k of succeededKeys) next.delete(k)
+              return next
+            })
+            handleArrivedSuccess()
+          }}
+        />
+      )}
+
+      {notReceivedOpen && (
+        <NotReceivedPanel
+          items={selectedItems}
+          itemOptions={(options?.items ?? []).map((it) => ({ value: it.name, label: it.name, meta: `Rp ${fmt(it.price)}` }))}
+          onClose={() => setNotReceivedOpen(false)}
+          onSuccess={() => { clearSelection(); setNotReceivedOpen(false); handleArrivedSuccess() }}
           onPartial={(succeededKeys) => {
             setSelected((prev) => {
               const next = new Set(prev)
@@ -1183,6 +1213,226 @@ function ArriveModal({
                       ? "Log to inventory & cancel"
                       : "Mark arrived"}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Not Received panel (bulk delivery problems) ─────────────────────────────
+
+type NotReceivedMode = "wrong" | "broken" | "missing" | "cancelled"
+
+function NotReceivedPanel({
+  items,
+  itemOptions,
+  onClose,
+  onSuccess,
+  onPartial,
+}: {
+  items: ArrivalListItem[]
+  itemOptions: { value: string; label: string; meta?: string }[]
+  onClose: () => void
+  onSuccess: () => void
+  onPartial: (succeededKeys: string[]) => void
+}) {
+  const [mode, setMode] = useState<NotReceivedMode>("broken")
+  // qty per item (default = pending). received SKU per item (Wrong tab only).
+  const [qtys, setQtys] = useState<Record<string, string>>(() => {
+    const m: Record<string, string> = {}
+    for (const it of items) m[selKey(it)] = String(it.totalPending)
+    return m
+  })
+  const [received, setReceived] = useState<Record<string, string>>({})
+  const [submitting, setSubmitting] = useState(false)
+  const [errors, setErrors] = useState<string[]>([])
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onClose])
+
+  const byEvent = useMemo(() => {
+    const m = new Map<string, ArrivalListItem[]>()
+    for (const it of items) {
+      const arr = m.get(it.event) ?? []
+      arr.push(it)
+      m.set(it.event, arr)
+    }
+    return m
+  }, [items])
+
+  const qtyOf = (it: ArrivalListItem) => Math.min(Number(qtys[selKey(it)]) || 0, it.totalPending)
+  const activeItems = items.filter((it) => qtyOf(it) > 0)
+  const totalQty = activeItems.reduce((s, it) => s + qtyOf(it), 0)
+  // Wrong needs a valid received SKU (present, differs from expected) on every active row.
+  const wrongMissingSku =
+    mode === "wrong" &&
+    activeItems.some((it) => {
+      const sku = received[selKey(it)]
+      return !sku || sku === it.productName
+    })
+  const canSubmit = totalQty > 0 && !wrongMissingSku
+
+  async function handleSubmit() {
+    if (!canSubmit || submitting) return
+    setSubmitting(true)
+    setErrors([])
+
+    const targets = activeItems.map((it) => ({
+      key: selKey(it),
+      event: it.event,
+      productId: it.productId,
+      productName: it.productName,
+      qty: qtyOf(it),
+      receivedItem: received[selKey(it)],
+    }))
+
+    const settled = await Promise.allSettled(
+      targets.map((t) =>
+        fetch("/api/sheets/arrival-list", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "not_received",
+            mode,
+            event: t.event,
+            productId: t.productId,
+            productName: t.productName,
+            qty: t.qty,
+            ...(mode === "wrong" ? { receivedItem: t.receivedItem } : {}),
+          }),
+        }).then(async (res) => {
+          const data = await res.json()
+          if (!res.ok) throw new Error(data.error ?? `Failed for ${t.productName}`)
+          return t.key
+        }),
+      ),
+    )
+
+    const succeeded: string[] = []
+    const failed: string[] = []
+    settled.forEach((r, i) => {
+      if (r.status === "fulfilled") succeeded.push(targets[i].key)
+      else failed.push(`${targets[i].productName}: ${r.reason instanceof Error ? r.reason.message : "failed"}`)
+    })
+
+    setSubmitting(false)
+    if (failed.length === 0) onSuccess()
+    else { setErrors(failed); if (succeeded.length > 0) onPartial(succeeded) }
+  }
+
+  const TABS: [NotReceivedMode, string][] = [
+    ["wrong", "Wrong"],
+    ["broken", "Broken"],
+    ["missing", "Missing"],
+    ["cancelled", "Cancelled"],
+  ]
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl border border-cream-border w-full max-w-lg flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="px-5 py-4 border-b border-cream-border shrink-0">
+          <h3 className="text-sm font-semibold text-foreground">
+            Not received — {items.length} item{items.length === 1 ? "" : "s"}
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Records the chosen quantity as not received, refunding the highest-priority orders first. Leftover units stay pending.
+          </p>
+        </div>
+
+        <div className="px-5 pt-4 shrink-0">
+          <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs">
+            {TABS.map(([m, label]) => {
+              const active = mode === m
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  className={`flex-1 px-2 py-1.5 font-medium transition-colors ${active ? "bg-amber-500 text-white" : "text-gray-500 hover:bg-cream"}`}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto min-h-0 flex flex-col gap-4">
+          {[...byEvent.entries()].map(([event, evItems]) => (
+            <div key={event} className="flex flex-col gap-2">
+              <div className="text-xs font-semibold text-gray-500">{event}</div>
+              {evItems.map((it) => {
+                const k = selKey(it)
+                const sku = received[k]
+                const skuInvalid = mode === "wrong" && qtyOf(it) > 0 && (!sku || sku === it.productName)
+                return (
+                  <div key={k} className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-foreground break-words">{it.productName}</div>
+                        {it.store && <div className="text-[11px] text-gray-400">{it.store}</div>}
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        max={it.totalPending}
+                        value={qtys[k] ?? ""}
+                        onChange={(e) => setQtys((p) => ({ ...p, [k]: e.target.value }))}
+                        className="w-20 shrink-0 border border-cream-border rounded-lg px-2 py-1.5 text-sm text-right bg-white focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:border-amber-500 transition-colors"
+                      />
+                      <span className="text-[11px] text-gray-400 w-16 shrink-0">/ {it.totalPending} pending</span>
+                    </div>
+                    {mode === "wrong" && (
+                      <div className="flex flex-col gap-1">
+                        <SearchableSelect
+                          value={sku ?? ""}
+                          onChange={(v) => setReceived((p) => ({ ...p, [k]: v }))}
+                          options={itemOptions}
+                          placeholder="Received item (what supplier sent)…"
+                        />
+                        {skuInvalid && <span className="text-[11px] text-red-600">Pick a received item different from the expected one.</span>}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+
+        <div className="px-5 py-4 border-t border-cream-border shrink-0 flex flex-col gap-3">
+          {errors.length > 0 && (
+            <div className="text-xs text-red-600">
+              <div className="font-medium">Some items failed (others were recorded):</div>
+              <ul className="list-disc pl-4">{errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={submitting || !canSubmit}
+              className="px-4 py-1.5 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors"
+            >
+              {submitting ? "Saving…" : "Confirm"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
