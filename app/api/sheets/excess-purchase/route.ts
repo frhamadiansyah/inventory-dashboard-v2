@@ -55,6 +55,12 @@ export async function POST(req: NextRequest) {
     const origUnitDispatch = new Map<number, number>()
     for (const r of formRows) origUnitDispatch.set(r.rowNumber, r.unitDispatch ?? 0)
 
+    // Each order's existing dispatch_receipt, preserved on apply — bulkUpdateDispatch
+    // always writes the column, so without this a partially-dispatched order's
+    // tracking ref would be silently clobbered with "".
+    const origDispatchReceipt = new Map<number, string>()
+    for (const r of formRows) origDispatchReceipt.set(r.rowNumber, r.dispatchReceipt ?? "")
+
     // Accumulate Duplicate_Form updates (keyed by rowNumber to merge multi-excess fills)
     const formUpdates = new Map<number, { customer: string; oldUnitBuy: number; unitBuy: number; receipt: string }>()
 
@@ -139,7 +145,7 @@ export async function POST(req: NextRequest) {
         entries.map(([rowNumber, d]) => ({
           rowNumber,
           unitDispatch: (origUnitDispatch.get(rowNumber) ?? 0) + (d.unitBuy - d.oldUnitBuy),
-          dispatchReceipt: "",
+          dispatchReceipt: origDispatchReceipt.get(rowNumber) ?? "",
         })),
         tx,
       )

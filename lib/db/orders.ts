@@ -758,7 +758,7 @@ export async function cancelOrderLines(orderIds: number[], db: DBExecutor = sql)
   if (orderIds.length === 0) return 0
   const res = await db`
     UPDATE orders
-    SET unit = 0, unit_buy = 0, updated_at = NOW()
+    SET unit = 0, unit_buy = 0, unit_dispatch = 0, unit_arrive = 0, updated_at = NOW()
     WHERE id = ANY(${orderIds})
   `
   return res.count
@@ -937,7 +937,9 @@ export async function cancelOrderUnits(
   }
 
   await db`
-    UPDATE orders SET unit = ${remainingUnit}, unit_buy = ${remainingUnitBuy}, updated_at = NOW()
+    UPDATE orders
+    SET unit = ${remainingUnit}, unit_buy = ${remainingUnitBuy},
+        unit_dispatch = LEAST(COALESCE(unit_dispatch, 0), ${remainingUnitBuy}), updated_at = NOW()
     WHERE id = ${data.orderId}
   `
 

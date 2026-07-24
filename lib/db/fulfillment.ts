@@ -685,27 +685,28 @@ export async function getReceivedReport(from: string, to: string): Promise<Recei
 
 /**
  * Partial allocation: shipments arrive in batches, so an order can have
- * unit_arrive < unit_buy and still appear in the arrival list with reduced
- * pending qty.
+ * unit_arrive < unit_dispatch and still appear in the arrival list with
+ * reduced pending qty. Gates/caps on unit_dispatch (not unit_buy) — only
+ * dispatched stock is eligible to be marked arrived.
  */
 export async function markProductArrived(data: {
   event: string
   productId: number
   quantityArrived: number
 }, actor?: string | null): Promise<{ filledOrderIds: number[]; unassignedUnits: number }> {
-  type Row = { id: number; customer: string; unitBuy: number; unitArrive: number; pending: number }
+  type Row = { id: number; customer: string; unitDispatch: number; unitArrive: number; pending: number }
   const orders = (await sql`
     SELECT
       id,
       customer,
-      unit_buy::int AS "unitBuy",
+      unit_dispatch::int AS "unitDispatch",
       COALESCE(unit_arrive, 0)::int AS "unitArrive",
-      (unit_buy - COALESCE(unit_arrive, 0))::int AS pending
+      (unit_dispatch - COALESCE(unit_arrive, 0))::int AS pending
     FROM orders
     WHERE event = ${data.event}
       AND product_id = ${data.productId}
-      AND unit_buy IS NOT NULL
-      AND (unit_arrive IS NULL OR unit_arrive < unit_buy)
+      AND unit_dispatch IS NOT NULL
+      AND (unit_arrive IS NULL OR unit_arrive < unit_dispatch)
     ORDER BY id ASC
   `) as unknown as Row[]
 
@@ -722,7 +723,7 @@ export async function markProductArrived(data: {
       await tx`SELECT set_config('app.actor', ${actor ?? ""}, true)`
       for (const { item: o, allocated } of allocations) {
         const newUnitArrive = o.unitArrive + allocated
-        if (newUnitArrive >= o.unitBuy) filledOrderIds.push(o.id)
+        if (newUnitArrive >= o.unitDispatch) filledOrderIds.push(o.id)
         await tx`
           UPDATE orders
           SET unit_arrive = ${newUnitArrive}, updated_at = NOW()

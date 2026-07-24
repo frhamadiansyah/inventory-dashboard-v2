@@ -109,7 +109,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const eligibleById = new Map((await getEligibleOrders(excessRow)).map((r) => [r.rowNumber, r]))
 
     let remaining = excessRow.unitBuy
-    const updates: (UpdatedRow & { receipt: string; unitArrive: number; unitDispatch: number })[] = []
+    const updates: (UpdatedRow & { receipt: string; unitArrive: number; unitDispatch: number; dispatchReceipt: string })[] = []
 
     for (const { rowNumber: targetRow, allocate: requestedAllocate } of requested) {
       const r = eligibleById.get(targetRow)
@@ -134,6 +134,7 @@ export async function POST(req: NextRequest, { params }: Params) {
         // dispatch list and the receiving list, not just the shopping list.
         unitArrive: (r.unitArrive ?? 0) + allocate,
         unitDispatch: (r.unitDispatch ?? 0) + allocate,
+        dispatchReceipt: r.dispatchReceipt ?? "",
         receipt: combinedReceipt,
       })
       remaining -= allocate
@@ -153,7 +154,7 @@ export async function POST(req: NextRequest, { params }: Params) {
         tx,
       )
       await bulkUpdateDispatch(
-        updates.map(({ rowNumber: rn, unitDispatch }) => ({ rowNumber: rn, unitDispatch, dispatchReceipt: "" })),
+        updates.map(({ rowNumber: rn, unitDispatch, dispatchReceipt }) => ({ rowNumber: rn, unitDispatch, dispatchReceipt })),
         tx,
       )
     })
