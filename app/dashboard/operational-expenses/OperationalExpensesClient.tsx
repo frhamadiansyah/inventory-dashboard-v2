@@ -886,7 +886,6 @@ function AddExpenseForm({
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault()
-    if (!draft.event.trim()) { setAddError("Event is required"); return }
     setAdding(true)
     setAddError(null)
     try {
@@ -930,6 +929,7 @@ function AddExpenseForm({
             onChange={pickEvent}
             options={events.map((e) => ({ value: e.name, label: e.name, meta: e.currency || IDR }))}
             placeholder="Select event…"
+            clearable
             disabled={adding}
           />
         </Field>
@@ -1137,7 +1137,6 @@ function EditExpenseModal({
   }
 
   async function handleSave() {
-    if (!draft.event.trim()) { setSaveError("Event is required"); return }
     setSaving(true)
     setSaveError(null)
     try {
@@ -1182,6 +1181,7 @@ function EditExpenseModal({
               onChange={pickEvent}
               options={events.map((e) => ({ value: e.name, label: e.name, meta: e.currency || IDR }))}
               placeholder="Select event…"
+              clearable
               disabled={saving}
             />
           </Field>

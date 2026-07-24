@@ -219,7 +219,7 @@ export async function addOperationalExpense(data: {
       (event, expense_date, description, category, amount_foreign, rate,
        amount_idr, is_settled, method, remarks)
     VALUES
-      (${data.event}, ${data.expenseDate || null}, ${data.description},
+      (${data.event || null}, ${data.expenseDate || null}, ${data.description},
        ${data.category}, ${data.amountForeign}, ${data.rate}, ${data.amountIdr},
        ${data.isSettled}, ${data.method}, ${data.remarks})
     RETURNING id
@@ -245,7 +245,7 @@ export async function updateOperationalExpense(
 ): Promise<void> {
   await db`
     UPDATE operational_expenses
-    SET event = ${data.event}, expense_date = ${data.expenseDate || null},
+    SET event = ${data.event || null}, expense_date = ${data.expenseDate || null},
         description = ${data.description}, category = ${data.category},
         amount_foreign = ${data.amountForeign}, rate = ${data.rate},
         amount_idr = ${data.amountIdr}, is_settled = ${data.isSettled},
