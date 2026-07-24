@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
-import { getDuplicateFormRowsForEvent, bulkUpdateDispatch, withActor, fetchPaidStatusMap, PAID_PRIORITY_RANK, type PaidStatus } from "@/lib/db"
+import { getDispatchList, getDuplicateFormRowsForEvent, bulkUpdateDispatch, withActor, fetchPaidStatusMap, PAID_PRIORITY_RANK, type PaidStatus } from "@/lib/db"
 
 type ItemLine = { item: string; qty: number }
 type UpdatedRow = { rowNumber: number; customer: string; oldUnitDispatch: number; unitDispatch: number }
@@ -68,6 +68,27 @@ function distribute(
       rows: updates.map(({ dispatchReceipt: _r, ...rest }) => rest),
       excess: remaining,
     },
+  }
+}
+
+// GET — list bought-not-yet-dispatched orders, grouped by product. Mirrors
+// /api/sheets/shopping-list's GET (same getShoppingList -> getDispatchList
+// swap as the rest of this dispatch stage); the client (DispatchListClient)
+// polls this to render the list and to silently refresh after a dispatch.
+export async function GET(req: NextRequest) {
+  const { session, error: authError } = await requireSession()
+  if (authError) return authError
+  const roleError = requireOwner(session)
+  if (roleError) return roleError
+
+  const event = req.nextUrl.searchParams.get("event") ?? undefined
+
+  try {
+    const items = await getDispatchList(event)
+    return NextResponse.json({ items }, { headers: { "Cache-Control": "no-store" } })
+  } catch (err) {
+    console.error("Failed to fetch dispatch list:", err)
+    return NextResponse.json({ error: "Failed to fetch dispatch list" }, { status: 500 })
   }
 }
 
