@@ -27,6 +27,11 @@ export interface DispatchListItem {
   store: string
   totalUnits: number      // remaining to dispatch
   totalOriginal: number   // full bought qty (SUM(unit_buy), for partial-state display)
+  // Purchase cost in the product's foreign currency, for the cargo document.
+  // valas = unit price in that currency; currency = its code (product's country).
+  // 0 / "" when the product has none.
+  valas: number
+  currency: string
   customerCount: number
   customers: string[]
   orderIds: number[]
@@ -55,6 +60,8 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             o.product_id,
             p.name AS product_name,
             p.store,
+            p.valas,
+            COALESCE(c.currency, '') AS currency,
             SUM(o.unit_buy - COALESCE(o.unit_dispatch, 0))::int AS total_pending,
             prod_total.total_original,
             COUNT(DISTINCT o.customer)::int AS customer_count,
@@ -69,6 +76,7 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             ) ORDER BY o.customer, o.id) AS orders
           FROM orders o
           JOIN products p ON p.id = o.product_id
+          LEFT JOIN countries c ON c.id = p.country_id
           -- Full bought qty spans ALL bought orders for the product (including
           -- the fully-dispatched rows the WHERE below filters out), so the UI
           -- shows "remaining / total bought" rather than "remaining / open rows".
@@ -79,7 +87,7 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             GROUP BY event, product_id
           ) prod_total ON prod_total.event = o.event AND prod_total.product_id = o.product_id
           WHERE (o.unit_buy IS NOT NULL AND (o.unit_dispatch IS NULL OR o.unit_dispatch < o.unit_buy)) AND o.event = ${event}
-          GROUP BY o.event, o.product_id, p.name, p.store, prod_total.total_original
+          GROUP BY o.event, o.product_id, p.name, p.store, p.valas, c.currency, prod_total.total_original
           HAVING SUM(o.unit_buy - COALESCE(o.unit_dispatch, 0)) > 0
           ORDER BY p.name, p.store
         `
@@ -89,6 +97,8 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             o.product_id,
             p.name AS product_name,
             p.store,
+            p.valas,
+            COALESCE(c.currency, '') AS currency,
             SUM(o.unit_buy - COALESCE(o.unit_dispatch, 0))::int AS total_pending,
             prod_total.total_original,
             COUNT(DISTINCT o.customer)::int AS customer_count,
@@ -103,6 +113,7 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             ) ORDER BY o.customer, o.id) AS orders
           FROM orders o
           JOIN products p ON p.id = o.product_id
+          LEFT JOIN countries c ON c.id = p.country_id
           JOIN events e ON e.name = o.event
           -- Full bought qty spans ALL bought orders for the (event, product),
           -- including the fully-dispatched rows the WHERE below filters out.
@@ -113,7 +124,7 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             GROUP BY event, product_id
           ) prod_total ON prod_total.event = o.event AND prod_total.product_id = o.product_id
           WHERE o.unit_buy IS NOT NULL AND (o.unit_dispatch IS NULL OR o.unit_dispatch < o.unit_buy)
-          GROUP BY o.event, o.product_id, p.name, p.store, prod_total.total_original
+          GROUP BY o.event, o.product_id, p.name, p.store, p.valas, c.currency, prod_total.total_original
           HAVING SUM(o.unit_buy - COALESCE(o.unit_dispatch, 0)) > 0
           -- Most recently created event first (matches the dashboard's event
           -- ordering); product name then store within each event. MAX() because
@@ -139,6 +150,8 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
     productId: r.product_id as number,
     productName: r.product_name as string,
     store: r.store as string,
+    valas: Number(r.valas) || 0,
+    currency: (r.currency as string) ?? "",
     totalUnits: r.total_pending as number,
     totalOriginal: r.total_original as number,
     customerCount: r.customer_count as number,
