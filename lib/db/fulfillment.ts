@@ -628,6 +628,7 @@ export async function getArrivalList(event?: string): Promise<ArrivalListItem[]>
 
 export interface ReceivedReportItem {
   event: string
+  dispatchReceipt: string
   store: string
   productId: number
   productName: string
@@ -635,17 +636,18 @@ export interface ReceivedReportItem {
 }
 
 /**
- * Per-product tally of units *received* over a local (Asia/Jakarta) date range,
- * inclusive on both ends, for the printable receiving report. Pass the same
- * value for `from` and `to` for a single day.
+ * Per-product tally of units *received* for one event, optionally narrowed to a
+ * local (Asia/Jakarta) date range (inclusive on both ends). `event` is required;
+ * pass `from`/`to` as null (or omit) to include every date for that event. Pass
+ * the same value for `from` and `to` for a single day.
  *
  * Receiving is incremental — `unit_arrive` accumulates in batches and only
  * bumps `updated_at`, which any edit also touches — so `orders` itself can't
  * say what arrived on a date. Instead we read the append-only `audit.audit_log`
  * (migration 029): each orders write stores old/new JSONB, so the per-row delta
  * `new.unit_arrive − old.unit_arrive` is exactly the units booked in that
- * transaction. Summing the positive deltas over the range gives the receipts;
- * a product received across several days in the range is one summed row.
+ * transaction. Summing the positive deltas gives the receipts; a product
+ * received across several days is one summed row.
  *
  * Only increases count (gross receipts): a downward correction that fixes an
  * over-count is intentionally excluded — this is a "what came in" log, not a
@@ -653,29 +655,42 @@ export interface ReceivedReportItem {
  * audit timestamp converted to Asia/Jakarta, so day boundaries match the wall
  * clock rather than UTC.
  */
-export async function getReceivedReport(from: string, to: string): Promise<ReceivedReportItem[]> {
+export async function getReceivedReport(
+  event: string,
+  from?: string | null,
+  to?: string | null,
+): Promise<ReceivedReportItem[]> {
+  // Apply the date window only when a range was given; otherwise every receipt
+  // for the event is included regardless of date.
+  const dateFilter =
+    from && to
+      ? sql`AND (a.at AT TIME ZONE 'Asia/Jakarta')::date BETWEEN ${from}::date AND ${to}::date`
+      : sql``
   const rows = await sql`
     SELECT
       (a.new_row->>'event')                                        AS event,
       (a.new_row->>'product_id')::int                              AS product_id,
       p.name                                                       AS product_name,
       p.store                                                      AS store,
+      STRING_AGG(DISTINCT NULLIF(a.new_row->>'dispatch_receipt', ''), ', '
+                 ORDER BY NULLIF(a.new_row->>'dispatch_receipt', '')) AS dispatch_receipt,
       SUM( (a.new_row->>'unit_arrive')::int
            - COALESCE((a.old_row->>'unit_arrive')::int, 0) )::int  AS units_received
     FROM audit.audit_log a
     JOIN products p ON p.id = (a.new_row->>'product_id')::int
-    LEFT JOIN events e ON e.name = (a.new_row->>'event')
     WHERE a.table_name = 'orders'
       AND a.action IN ('INSERT', 'UPDATE')
-      AND (a.at AT TIME ZONE 'Asia/Jakarta')::date BETWEEN ${from}::date AND ${to}::date
+      AND (a.new_row->>'event') = ${event}
+      ${dateFilter}
       AND COALESCE((a.new_row->>'unit_arrive')::int, 0)
           > COALESCE((a.old_row->>'unit_arrive')::int, 0)
-    GROUP BY event, product_id, p.name, p.store, e.created_at
-    ORDER BY e.created_at DESC NULLS LAST, event, p.store, p.name
+    GROUP BY event, product_id, p.name, p.store
+    ORDER BY event, dispatch_receipt NULLS FIRST, p.store, p.name
   `
 
   return rows.map((r) => ({
     event: r.event as string,
+    dispatchReceipt: (r.dispatch_receipt as string) ?? "",
     store: (r.store as string) ?? "",
     productId: r.product_id as number,
     productName: r.product_name as string,
