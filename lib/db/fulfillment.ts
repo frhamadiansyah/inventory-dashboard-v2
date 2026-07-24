@@ -759,10 +759,11 @@ export interface NotReceivedResult {
 
 /**
  * Bulk "Not Received": record a delivery problem against `qty` units of one
- * event+product. Allocates those units across the waiting orders by priority
- * (paid → partial → unpaid, then id) with partial-order cancellation; leftover
- * (pending − qty) units stay pending. Refunds auto-materialize as invoices drop.
- * Inventory logging depends on mode:
+ * event+product. Allocates those units across the waiting orders by cancelling
+ * unpaid orders first (paid customers protected) — the reverse of
+ * markProductArrived, which fills paid customers first — with partial-order
+ * cancellation; leftover (pending − qty) units stay pending. Refunds
+ * auto-materialize as invoices drop. Inventory logging depends on mode:
  *   - broken / missing → log qty units flagged that reason (unassignable)
  *   - cancelled        → log the reclaimed in-hand units as customer_cancelled (assignable)
  *   - wrong            → log qty units of the received SKU as wrong_product (assignable)
@@ -800,7 +801,10 @@ export async function recordNotReceived(
   `) as unknown as Row[]
 
   const statusMap = await fetchPaidStatusMap([data.event])
-  orders.sort(compareOrderPriority(data.event, statusMap))
+  // Cancel LOWEST-priority (unpaid) orders first on a shortage, protecting
+  // paid customers — mirrors shopping-list's out-of-stock reduction (the
+  // reverse of markProductArrived, which fills paid customers first).
+  orders.sort(compareOrderPriority(data.event, statusMap)).reverse()
 
   const { allocations, excess } = allocateFifo(orders, (o) => o.pending, data.qty)
   if (excess > 0) throw new Error(`Only ${data.qty - excess} units are pending; cannot record ${data.qty}`)
