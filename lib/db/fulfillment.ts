@@ -6,6 +6,7 @@ import type { DBExecutor } from "./actor"
 import type { ShipOrderLine, ShipCustomer, ShipStatus, ShipOrdersParams, ShipMergedParams, ShipMergedResult, ShippingRecord, CustomerDetail } from "./types"
 import { getPaymentStatus, type PaymentStatus } from "./finance"
 import { fetchPaidStatusMap, compareOrderPriority, type PaidStatus } from "./shopping-list"
+import { appendExcessPurchase, reduceOrderRefundOnly } from "./orders"
 
 // ─── Ship Orders ────────────────────────────────────────────────────────────
 
@@ -749,5 +750,91 @@ export async function markProductArrived(data: {
   }
 
   return { filledOrderIds, unassignedUnits }
+}
+
+export interface NotReceivedResult {
+  cancelledUnits: number
+  excessUnits: number
+}
+
+/**
+ * Bulk "Not Received": record a delivery problem against `qty` units of one
+ * event+product. Allocates those units across the waiting orders by priority
+ * (paid → partial → unpaid, then id) with partial-order cancellation; leftover
+ * (pending − qty) units stay pending. Refunds auto-materialize as invoices drop.
+ * Inventory logging depends on mode:
+ *   - broken / missing → log qty units flagged that reason (unassignable)
+ *   - cancelled        → log the reclaimed in-hand units as customer_cancelled (assignable)
+ *   - wrong            → log qty units of the received SKU as wrong_product (assignable)
+ * Manages its own transaction + actor, mirroring markProductArrived.
+ */
+export async function recordNotReceived(
+  data: {
+    event: string
+    productId: number
+    productName: string
+    qty: number
+    mode: "wrong" | "broken" | "missing" | "cancelled"
+    receivedItem?: string
+  },
+  actor?: string | null,
+): Promise<NotReceivedResult> {
+  if (!(data.qty >= 1)) throw new Error("qty must be at least 1")
+  if (data.mode === "wrong") {
+    if (!data.receivedItem?.trim()) throw new Error("receivedItem is required for a wrong delivery")
+    if (data.receivedItem === data.productName) throw new Error("Received item must differ from the expected item")
+  }
+
+  type Row = { id: number; customer: string; unitBuy: number; unitShip: number; pending: number }
+  const orders = (await sql`
+    SELECT id, customer,
+           COALESCE(unit_buy, 0)::int  AS "unitBuy",
+           COALESCE(unit_ship, 0)::int AS "unitShip",
+           (unit_dispatch - COALESCE(unit_arrive, 0))::int AS pending
+    FROM orders
+    WHERE event = ${data.event}
+      AND product_id = ${data.productId}
+      AND unit_dispatch IS NOT NULL
+      AND (unit_arrive IS NULL OR unit_arrive < unit_dispatch)
+    ORDER BY id ASC
+  `) as unknown as Row[]
+
+  const statusMap = await fetchPaidStatusMap([data.event])
+  orders.sort(compareOrderPriority(data.event, statusMap))
+
+  const { allocations, excess } = allocateFifo(orders, (o) => o.pending, data.qty)
+  if (excess > 0) throw new Error(`Only ${data.qty - excess} units are pending; cannot record ${data.qty}`)
+
+  let cancelledUnits = 0
+  let inHandUnits = 0
+  await sql.begin(async (tx) => {
+    await tx`SELECT set_config('app.actor', ${actor ?? ""}, true)`
+    for (const { item: o, allocated } of allocations) {
+      cancelledUnits += allocated
+      inHandUnits += Math.min(allocated, Math.max(0, o.unitBuy - o.unitShip))
+      await reduceOrderRefundOnly({ orderId: o.id, qty: allocated }, tx)
+    }
+    if (data.mode === "broken" || data.mode === "missing") {
+      await appendExcessPurchase(
+        [{ event: data.event, items: data.productName, unitBuy: data.qty, receipt: "", reason: data.mode }],
+        tx,
+      )
+    } else if (data.mode === "cancelled") {
+      if (inHandUnits > 0) {
+        await appendExcessPurchase(
+          [{ event: data.event, items: data.productName, unitBuy: inHandUnits, receipt: "", reason: "customer_cancelled" }],
+          tx,
+        )
+      }
+    } else {
+      await appendExcessPurchase(
+        [{ event: data.event, items: data.receivedItem!, unitBuy: data.qty, receipt: "", reason: "wrong_product", expectedItem: data.productName }],
+        tx,
+      )
+    }
+  })
+
+  const excessUnits = data.mode === "cancelled" ? inHandUnits : data.qty
+  return { cancelledUnits, excessUnits }
 }
 
