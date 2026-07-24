@@ -52,7 +52,7 @@ export async function getDuplicateFormRows(limit?: number): Promise<FormRow[]> {
         SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
                p.name AS product_name, o.unit, o.note,
                o.created_at, o.updated_at, o.unit_buy, o.receipt,
-               o.unit_arrive, o.unit_ship, o.unit_hold,
+               o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
                c.data_diri AS customer_data_diri
         FROM orders o
         JOIN products p ON p.id = o.product_id
@@ -66,7 +66,7 @@ export async function getDuplicateFormRows(limit?: number): Promise<FormRow[]> {
       SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
              p.name AS product_name, o.unit, o.note,
              o.created_at, o.updated_at, o.unit_buy, o.receipt,
-             o.unit_arrive, o.unit_ship, o.unit_hold,
+             o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
              c.data_diri AS customer_data_diri
       FROM orders o
       JOIN products p ON p.id = o.product_id
@@ -92,7 +92,7 @@ export async function getDuplicateFormRowsForEvent(event: string): Promise<FormR
     SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
            p.name AS product_name, o.unit, o.note,
            o.created_at, o.updated_at, o.unit_buy, o.receipt,
-           o.unit_arrive, o.unit_ship, o.unit_hold,
+           o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
            c.data_diri AS customer_data_diri
     FROM orders o
     JOIN products p ON p.id = o.product_id
@@ -117,7 +117,7 @@ export async function getDuplicateFormRowsForEvents(events: string[]): Promise<F
     SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
            p.name AS product_name, o.unit, o.note,
            o.created_at, o.updated_at, o.unit_buy, o.receipt,
-           o.unit_arrive, o.unit_ship, o.unit_hold,
+           o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
            c.data_diri AS customer_data_diri
     FROM orders o
     JOIN products p ON p.id = o.product_id
@@ -143,7 +143,7 @@ export async function getDuplicateFormRowsForItems(items: string[]): Promise<For
     SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
            p.name AS product_name, o.unit, o.note,
            o.created_at, o.updated_at, o.unit_buy, o.receipt,
-           o.unit_arrive, o.unit_ship, o.unit_hold,
+           o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
            c.data_diri AS customer_data_diri
     FROM orders o
     JOIN products p ON p.id = o.product_id
