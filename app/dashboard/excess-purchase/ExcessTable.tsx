@@ -267,8 +267,8 @@ export default function ExcessTable() {
           return (
             <div className="flex items-center justify-end gap-2">
               {/* Broken stock isn't sellable — no apply action. */}
-              {r.reason === "broken" ? (
-                <span className="inline-flex p-1 text-gray-300" title="Not available — broken inventory can't be applied">
+              {r.reason === "broken" || r.reason === "missing" ? (
+                <span className="inline-flex p-1 text-gray-300" title="Not available — broken or missing inventory can't be applied">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="10" />
                     <path d="m4.9 4.9 14.2 14.2" />
@@ -353,8 +353,8 @@ export default function ExcessTable() {
         <div className="flex items-center justify-end pt-2.5 border-t border-cream-border">
           <span className="mr-auto"><ReasonBadge reason={r.reason} /></span>
           {/* Broken stock isn't sellable — no apply action. */}
-          {r.reason === "broken" ? (
-            <span className="inline-flex px-1 py-1.5 text-gray-300" title="Not available — broken inventory can't be applied">
+          {r.reason === "broken" || r.reason === "missing" ? (
+            <span className="inline-flex px-1 py-1.5 text-gray-300" title="Not available — broken or missing inventory can't be applied">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="10" />
                 <path d="m4.9 4.9 14.2 14.2" />

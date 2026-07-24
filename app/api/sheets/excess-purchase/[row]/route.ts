@@ -13,7 +13,7 @@ import {
 } from "@/lib/db"
 import type { ExcessReason, ExcessRow, FormRow } from "@/lib/db"
 
-const EXCESS_REASONS: ExcessReason[] = ["overbuy", "overship", "wrong_product", "broken", "customer_cancelled", "manual"]
+const EXCESS_REASONS: ExcessReason[] = ["overbuy", "overship", "wrong_product", "broken", "missing", "customer_cancelled", "manual"]
 
 type Params = { params: Promise<{ row: string }> }
 type UpdatedRow = { rowNumber: number; event: string; customer: string; oldUnitBuy: number; unitBuy: number }
@@ -95,8 +95,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (!excessRow) {
       return NextResponse.json({ error: "Excess row not found" }, { status: 404 })
     }
-    if (excessRow.reason === "broken") {
-      return NextResponse.json({ error: "Broken inventory can't be applied to orders" }, { status: 400 })
+    if (excessRow.reason === "broken" || excessRow.reason === "missing") {
+      return NextResponse.json({ error: "Broken or missing inventory can't be applied to orders" }, { status: 400 })
     }
     if (requested.length === 0) {
       return NextResponse.json({ error: "Pick at least one order to apply to" }, { status: 400 })
