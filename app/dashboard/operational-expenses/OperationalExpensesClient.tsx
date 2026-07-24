@@ -863,8 +863,11 @@ function AddExpenseForm({
   }, [seed?.version])
 
   const selectedEvent = events.find((e) => e.name === draft.event)
-  const eventCurrency = selectedEvent?.currency || ""
-  const currencyOptions = eventCurrency ? [IDR, eventCurrency] : [IDR]
+  // Currency defaults to the selected event's currency (set in pickEvent), but
+  // the list always offers every currency in use so it can be changed by
+  // clicking — with or without an event. The rate is derived from the entered
+  // amounts, not the event, so any currency is valid.
+  const currencyOptions = Array.from(new Set<string>([IDR, ...events.map((e) => e.currency)].filter(Boolean)))
   const isIdr = draft.currency === IDR
 
   const foreignNum = parseAmount(draft.amountForeign)
@@ -1118,8 +1121,9 @@ function EditExpenseModal({
   const [saveError, setSaveError] = useState<string | null>(null)
 
   const selectedEvent = events.find((e) => e.name === draft.event)
-  const foreignCurrency = selectedEvent?.currency || (draft.currency !== IDR ? draft.currency : "")
-  const currencyOptions = foreignCurrency ? [IDR, foreignCurrency] : [IDR]
+  // Same as the add form: default to the event currency, but always list every
+  // currency in use (plus the row's current one) so it stays changeable by click.
+  const currencyOptions = Array.from(new Set<string>([IDR, draft.currency, ...events.map((e) => e.currency)].filter(Boolean)))
   const isIdr = draft.currency === IDR
 
   const foreignNum = parseAmount(draft.amountForeign)

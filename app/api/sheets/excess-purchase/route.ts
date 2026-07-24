@@ -5,6 +5,7 @@ import {
   getExcessPurchasePaginated,
   getDuplicateFormRowsForItems,
   bulkUpdatePurchase,
+  bulkUpdateArrive,
   deleteExcessRow,
   updateExcessRowUnitBuy,
   appendExcessPurchase,
@@ -42,6 +43,11 @@ export async function POST(req: NextRequest) {
     // Working copy of unitBuy so sequential excess rows see each other's allocations
     const workingUnitBuy = new Map<number, number>()
     for (const r of formRows) workingUnitBuy.set(r.rowNumber, r.unitBuy ?? 0)
+
+    // Each order's original unit_arrive, to bump alongside unit_buy on apply
+    // (applied excess is already in hand, so it counts as arrived).
+    const origUnitArrive = new Map<number, number>()
+    for (const r of formRows) origUnitArrive.set(r.rowNumber, r.unitArrive ?? 0)
 
     // Accumulate Duplicate_Form updates (keyed by rowNumber to merge multi-excess fills)
     const formUpdates = new Map<number, { customer: string; oldUnitBuy: number; unitBuy: number; receipt: string }>()
@@ -101,15 +107,27 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 1. Write all Duplicate_Form updates in one batch
-    await withActor(session.user.email, (tx) => bulkUpdatePurchase(
-      Array.from(formUpdates.entries()).map(([rowNumber, d]) => ({
-        rowNumber,
-        unitBuy: d.unitBuy,
-        receipt: d.receipt,
-      })),
-      tx,
-    ))
+    // 1. Write all Duplicate_Form updates in one batch. unit_arrive is bumped by
+    //    the same amount applied (unitBuy - oldUnitBuy) so applied excess also
+    //    drops off the receiving list, not just the shopping list.
+    await withActor(session.user.email, async (tx) => {
+      const entries = Array.from(formUpdates.entries())
+      await bulkUpdatePurchase(
+        entries.map(([rowNumber, d]) => ({
+          rowNumber,
+          unitBuy: d.unitBuy,
+          receipt: d.receipt,
+        })),
+        tx,
+      )
+      await bulkUpdateArrive(
+        entries.map(([rowNumber, d]) => ({
+          rowNumber,
+          unitArrive: (origUnitArrive.get(rowNumber) ?? 0) + (d.unitBuy - d.oldUnitBuy),
+        })),
+        tx,
+      )
+    })
 
     // 2. Update partially-consumed excess rows (before deletes shift row numbers)
     for (const { rowNumber, unitBuy } of excessToUpdate) {
