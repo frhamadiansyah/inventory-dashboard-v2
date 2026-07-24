@@ -947,6 +947,31 @@ export async function cancelOrderUnits(
   return { excessUnits, remainingUnit }
 }
 
+/**
+ * Reduce an order line by `qty` units without logging anything to Inventory —
+ * the refund-only primitive behind not-received partial cancellation. Drops
+ * unit, unit_buy and unit_dispatch by qty (the cancelled units come off the
+ * dispatched-but-unarrived pool), each floored so nothing falls below what's
+ * already committed downstream (unit_buy ≥ unit_ship, unit_dispatch ≥
+ * unit_arrive). Reducing `unit` drops the invoice, so an overpaid customer's
+ * refund auto-materializes. Callers that must also return stock log Inventory
+ * themselves. Unlike cancelOrderUnits (invoice-cancel: clamps unit_dispatch to
+ * the shrunk unit_buy), this subtracts qty from unit_dispatch directly.
+ */
+export async function reduceOrderRefundOnly(
+  data: { orderId: number; qty: number },
+  db: DBExecutor = sql,
+): Promise<void> {
+  await db`
+    UPDATE orders
+    SET unit = unit - ${data.qty},
+        unit_buy = GREATEST(COALESCE(unit_ship, 0), COALESCE(unit_buy, 0) - ${data.qty}),
+        unit_dispatch = GREATEST(COALESCE(unit_arrive, 0), COALESCE(unit_dispatch, 0) - ${data.qty}),
+        updated_at = NOW()
+    WHERE id = ${data.orderId}
+  `
+}
+
 export async function appendExcessPurchase(
   rows: {
     event: string
