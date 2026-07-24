@@ -4,6 +4,7 @@ import {
   getExcessPurchaseRows,
   getDuplicateFormRowsForItems,
   bulkUpdatePurchase,
+  bulkUpdateArrive,
   deleteExcessRow,
   updateExcessRowUnitBuy,
   updateExcessRow,
@@ -107,7 +108,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const eligibleById = new Map((await getEligibleOrders(excessRow)).map((r) => [r.rowNumber, r]))
 
     let remaining = excessRow.unitBuy
-    const updates: (UpdatedRow & { receipt: string })[] = []
+    const updates: (UpdatedRow & { receipt: string; unitArrive: number })[] = []
 
     for (const { rowNumber: targetRow, allocate: requestedAllocate } of requested) {
       const r = eligibleById.get(targetRow)
@@ -127,6 +128,9 @@ export async function POST(req: NextRequest, { params }: Params) {
         customer: r.customer,
         oldUnitBuy: current,
         unitBuy: current + allocate,
+        // Applied excess is stock already in hand, so it counts as arrived too —
+        // bump unit_arrive by the same amount to drop it off the receiving list.
+        unitArrive: (r.unitArrive ?? 0) + allocate,
         receipt: combinedReceipt,
       })
       remaining -= allocate
@@ -136,10 +140,16 @@ export async function POST(req: NextRequest, { params }: Params) {
       return NextResponse.json({ error: "Nothing to apply — pick at least one order with units allocated" }, { status: 400 })
     }
 
-    await withActor(session.user.email, (tx) => bulkUpdatePurchase(
-      updates.map(({ rowNumber: rn, unitBuy, receipt }) => ({ rowNumber: rn, unitBuy, receipt })),
-      tx,
-    ))
+    await withActor(session.user.email, async (tx) => {
+      await bulkUpdatePurchase(
+        updates.map(({ rowNumber: rn, unitBuy, receipt }) => ({ rowNumber: rn, unitBuy, receipt })),
+        tx,
+      )
+      await bulkUpdateArrive(
+        updates.map(({ rowNumber: rn, unitArrive }) => ({ rowNumber: rn, unitArrive })),
+        tx,
+      )
+    })
 
     if (remaining <= 0) {
       await withActor(session.user.email, (tx) => deleteExcessRow(rowNumber, tx))
