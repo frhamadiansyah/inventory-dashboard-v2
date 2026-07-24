@@ -184,7 +184,9 @@ export default function DataTable({ isOwner }: { isOwner: boolean }) {
     }
     setRows((rs) => rs.map((r) =>
       r.rowNumber === rowNumber
-        ? { ...r, ...(column === "unit_buy" ? { unitBuy: value } : { unitArrive: value }) }
+        ? { ...r, ...(column === "unit_buy" ? { unitBuy: value }
+            : column === "unit_dispatch" ? { unitDispatch: value }
+            : { unitArrive: value }) }
         : r,
     ))
   }, [])
