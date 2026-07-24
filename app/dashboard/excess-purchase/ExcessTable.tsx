@@ -22,6 +22,7 @@ const REASON_LABEL: Record<ExcessReason, string> = {
   overship: "Overship",
   wrong_product: "Wrong",
   broken: "Broken",
+  missing: "Missing",
   customer_cancelled: "Customer cancelled",
   manual: "Manual entry",
 }
@@ -31,6 +32,7 @@ const REASON_CLASS: Record<ExcessReason, string> = {
   overship: "bg-blue-50 text-blue-700 border-blue-200",
   wrong_product: "bg-yellow-50 text-yellow-700 border-yellow-200",
   broken: "bg-red-50 text-red-700 border-red-200",
+  missing: "bg-orange-50 text-orange-700 border-orange-200",
   customer_cancelled: "bg-purple-50 text-purple-700 border-purple-200",
   manual: "bg-teal-50 text-teal-700 border-teal-200",
 }
