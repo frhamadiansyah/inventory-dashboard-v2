@@ -29,9 +29,9 @@ function buildEligibleMap(rows: FormRows, event: string, statusMap: Map<string, 
   const rank = (customer: string) => PAID_PRIORITY_RANK[statusMap.get(`${event}|${customer}`) ?? "unpaid"]
   const map = new Map<string, FormRows>()
   for (const r of rows) {
-    const unitBuy = r.unitBuy ?? 0
-    if (unitBuy <= 0) continue
-    if ((r.unitArrive ?? 0) >= unitBuy) continue
+    const unitDispatch = r.unitDispatch ?? 0
+    if (unitDispatch <= 0) continue
+    if ((r.unitArrive ?? 0) >= unitDispatch) continue
     const group = map.get(r.items)
     if (group) group.push(r)
     else map.set(r.items, [r])
@@ -53,7 +53,7 @@ function distribute(
   for (const row of eligible) {
     if (remaining <= 0) break
     const current = row.unitArrive ?? 0
-    const capacity = (row.unitBuy ?? 0) - current
+    const capacity = (row.unitDispatch ?? 0) - current
     const allocate = Math.min(capacity, remaining)
     updates.push({
       rowNumber: row.rowNumber,
