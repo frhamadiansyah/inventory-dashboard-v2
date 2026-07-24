@@ -519,11 +519,13 @@ export interface ArrivalListItem {
 }
 
 /**
- * Items that have been bought (unit_buy IS NOT NULL) but haven't fully arrived yet
- * (unit_arrive IS NULL OR unit_arrive < unit_buy). Grouped by event + product, with
- * the per-customer order list nested for the mark-arrived modal.
+ * Items that have been dispatched (unit_dispatch IS NOT NULL) but haven't fully
+ * arrived yet (unit_arrive IS NULL OR unit_arrive < unit_dispatch) — you can only
+ * receive what was dispatched. Grouped by event + product, with the per-customer
+ * order list nested for the mark-arrived modal.
  */
 export async function getArrivalList(event?: string): Promise<ArrivalListItem[]> {
+  // Arrival gates on unit_dispatch (dispatched stock is what can be received); 'unitBuy' JSON key carries the dispatched count.
   const rows = event
     ? await sql`
         SELECT
@@ -534,26 +536,26 @@ export async function getArrivalList(event?: string): Promise<ArrivalListItem[]>
           p.valas,
           p.kurs,
           COALESCE(c.currency, '') AS currency,
-          SUM(o.unit_buy - COALESCE(o.unit_arrive, 0))::int AS total_pending,
-          SUM(o.unit_buy)::int AS total_bought,
+          SUM(o.unit_dispatch - COALESCE(o.unit_arrive, 0))::int AS total_pending,
+          SUM(o.unit_dispatch)::int AS total_bought,
           COUNT(DISTINCT o.customer)::int AS customer_count,
           ARRAY_AGG(DISTINCT o.customer ORDER BY o.customer) AS customers,
           ARRAY_AGG(o.id ORDER BY o.id) AS order_ids,
           JSON_AGG(JSON_BUILD_OBJECT(
             'id', o.id,
             'customer', o.customer,
-            'unitBuy', o.unit_buy,
+            'unitBuy', o.unit_dispatch,
             'unitArrive', COALESCE(o.unit_arrive, 0),
-            'pending', o.unit_buy - COALESCE(o.unit_arrive, 0)
+            'pending', o.unit_dispatch - COALESCE(o.unit_arrive, 0)
           ) ORDER BY o.customer, o.id) AS orders
         FROM orders o
         JOIN products p ON p.id = o.product_id
         LEFT JOIN countries c ON c.id = p.country_id
-        WHERE o.unit_buy IS NOT NULL
-          AND (o.unit_arrive IS NULL OR o.unit_arrive < o.unit_buy)
+        WHERE o.unit_dispatch IS NOT NULL
+          AND (o.unit_arrive IS NULL OR o.unit_arrive < o.unit_dispatch)
           AND o.event = ${event}
         GROUP BY o.event, o.product_id, p.name, p.store, p.valas, p.kurs, c.currency
-        HAVING SUM(o.unit_buy - COALESCE(o.unit_arrive, 0)) > 0
+        HAVING SUM(o.unit_dispatch - COALESCE(o.unit_arrive, 0)) > 0
         ORDER BY p.name, p.store
       `
     : await sql`
@@ -565,26 +567,26 @@ export async function getArrivalList(event?: string): Promise<ArrivalListItem[]>
           p.valas,
           p.kurs,
           COALESCE(c.currency, '') AS currency,
-          SUM(o.unit_buy - COALESCE(o.unit_arrive, 0))::int AS total_pending,
-          SUM(o.unit_buy)::int AS total_bought,
+          SUM(o.unit_dispatch - COALESCE(o.unit_arrive, 0))::int AS total_pending,
+          SUM(o.unit_dispatch)::int AS total_bought,
           COUNT(DISTINCT o.customer)::int AS customer_count,
           ARRAY_AGG(DISTINCT o.customer ORDER BY o.customer) AS customers,
           ARRAY_AGG(o.id ORDER BY o.id) AS order_ids,
           JSON_AGG(JSON_BUILD_OBJECT(
             'id', o.id,
             'customer', o.customer,
-            'unitBuy', o.unit_buy,
+            'unitBuy', o.unit_dispatch,
             'unitArrive', COALESCE(o.unit_arrive, 0),
-            'pending', o.unit_buy - COALESCE(o.unit_arrive, 0)
+            'pending', o.unit_dispatch - COALESCE(o.unit_arrive, 0)
           ) ORDER BY o.customer, o.id) AS orders
         FROM orders o
         JOIN products p ON p.id = o.product_id
         LEFT JOIN countries c ON c.id = p.country_id
         JOIN events e ON e.name = o.event
-        WHERE o.unit_buy IS NOT NULL
-          AND (o.unit_arrive IS NULL OR o.unit_arrive < o.unit_buy)
+        WHERE o.unit_dispatch IS NOT NULL
+          AND (o.unit_arrive IS NULL OR o.unit_arrive < o.unit_dispatch)
         GROUP BY o.event, o.product_id, p.name, p.store, p.valas, p.kurs, c.currency
-        HAVING SUM(o.unit_buy - COALESCE(o.unit_arrive, 0)) > 0
+        HAVING SUM(o.unit_dispatch - COALESCE(o.unit_arrive, 0)) > 0
         -- Most recently created event first (matches the shopping list and
         -- dashboard); product name then store within each event. MAX() because
         -- created_at is constant per event but not in the GROUP BY.
