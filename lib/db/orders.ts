@@ -241,6 +241,7 @@ export async function getDuplicateFormRowsPaginated(opts: {
     unit: "o.unit", unitPrice: "o.unit_price", note: "o.note", createdAt: "o.created_at",
     unitBuy: "o.unit_buy", receipt: "o.receipt",
     unitArrive: "o.unit_arrive", unitShip: "o.unit_ship", unitHold: "o.unit_hold",
+    unitDispatch: "o.unit_dispatch",
     updatedAt: "o.updated_at",
   }
   const sortCol = (opts.sortKey && SORT_COLUMNS[opts.sortKey]) || "o.id"
@@ -253,7 +254,7 @@ export async function getDuplicateFormRowsPaginated(opts: {
     `SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
             p.name AS product_name, o.unit, o.note,
             o.created_at, o.updated_at, o.unit_buy, o.receipt,
-            o.unit_arrive, o.unit_ship, o.unit_hold,
+            o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
             c.data_diri AS customer_data_diri
      FROM orders o
      JOIN products p ON p.id = o.product_id
@@ -315,6 +316,8 @@ function mapFormRow(r: Record<string, unknown>): FormRow {
     receipt: (r.receipt as string) ?? "",
     unitArrive: (r.unit_arrive as number) ?? null,
     unitShip: (r.unit_ship as number) ?? null,
+    unitDispatch: (r.unit_dispatch as number) ?? null,
+    dispatchReceipt: (r.dispatch_receipt as string) ?? "",
     unitHold: (r.unit_hold as number) ?? null,
     hasAddress: dataDiri.trim().length > 0,
   }
@@ -405,7 +408,7 @@ export async function updateFormRowStage3(
  */
 export async function updateOrderOwnerCell(
   rowNumber: number,
-  column: "unit_buy" | "unit_arrive",
+  column: "unit_buy" | "unit_arrive" | "unit_dispatch",
   value: number | null,
   db: DBExecutor = sql,
 ): Promise<void> {
@@ -413,6 +416,12 @@ export async function updateOrderOwnerCell(
     await db`
       UPDATE orders
       SET unit_buy = ${value}, updated_at = NOW()
+      WHERE id = ${rowNumber}
+    `
+  } else if (column === "unit_dispatch") {
+    await db`
+      UPDATE orders
+      SET unit_dispatch = ${value}, updated_at = NOW()
       WHERE id = ${rowNumber}
     `
   } else {

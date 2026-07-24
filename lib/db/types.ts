@@ -50,6 +50,8 @@ export interface FormRow {
   receipt: string
   unitArrive: number | null
   unitShip: number | null
+  unitDispatch: number | null
+  dispatchReceipt: string
   unitHold: number | null
   // True when the customer's data_diri (free-text address blob) is filled.
   // Joined from the customers table by normalized handle; the List Order page
