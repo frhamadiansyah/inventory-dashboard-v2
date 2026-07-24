@@ -87,6 +87,12 @@ export interface ArriveUpdate {
   unitArrive: number
 }
 
+export interface DispatchUpdate {
+  rowNumber: number
+  unitDispatch: number
+  dispatchReceipt: string
+}
+
 export interface InvoiceOrderLine {
   order: string
   unit: number
