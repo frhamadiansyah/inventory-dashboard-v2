@@ -54,7 +54,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 })
       }
       const { column, value } = body
-      if (column !== "unit_buy" && column !== "unit_arrive") {
+      if (column !== "unit_buy" && column !== "unit_arrive" && column !== "unit_dispatch") {
         return NextResponse.json({ error: "Invalid column" }, { status: 400 })
       }
       const numericValue = value == null || value === "" ? null : Number(value)

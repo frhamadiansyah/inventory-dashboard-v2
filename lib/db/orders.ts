@@ -546,7 +546,8 @@ export async function returnOrderUnitsToExcess(
   if (excessUnits > 0) {
     await db`
       UPDATE orders
-      SET unit = ${newUnit}, unit_buy = ${unitBuy - excessUnits}, updated_at = NOW()
+      SET unit = ${newUnit}, unit_buy = ${unitBuy - excessUnits},
+          unit_dispatch = LEAST(COALESCE(unit_dispatch, 0), ${newUnit}), updated_at = NOW()
       WHERE id = ${rowNumber}
     `
   } else {
