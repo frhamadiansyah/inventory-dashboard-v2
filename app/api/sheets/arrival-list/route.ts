@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
-import { getArrivalList, markProductArrived, recordWrongProduct, recordBrokenArrival, recordMissingArrival, recordCustomerCancellation, withActor } from "@/lib/db"
+import { getArrivalList, markProductArrived, recordWrongProduct, recordBrokenArrival, recordMissingArrival, recordCustomerCancellation, recordNotReceived, withActor } from "@/lib/db"
 
 export async function GET(req: NextRequest) {
   const { session, error: authError } = await requireSession()
@@ -111,6 +111,31 @@ export async function POST(req: NextRequest) {
       }
       const result = await withActor(session.user.email, (tx) =>
         recordCustomerCancellation({ event, productName, cancelOrderIds }, tx),
+      )
+      return NextResponse.json({ success: true, ...result })
+    }
+
+    // Bulk "Not Received": record a delivery problem against `qty` units of one
+    // product, allocated across its waiting orders by priority (recordNotReceived
+    // runs its own transaction + actor).
+    if (body.action === "not_received") {
+      const { event, productId, productName, qty, mode, receivedItem } = body
+      const validModes = ["wrong", "broken", "missing", "cancelled"]
+      if (!event || !productId || !productName || typeof qty !== "number" || qty < 1 || !validModes.includes(mode)) {
+        return NextResponse.json(
+          { error: "event, productId, productName, qty (>=1) and a valid mode are required" },
+          { status: 400 },
+        )
+      }
+      if (mode === "wrong" && (!receivedItem || receivedItem === productName)) {
+        return NextResponse.json(
+          { error: "A wrong delivery needs a received item different from the expected one" },
+          { status: 400 },
+        )
+      }
+      const result = await recordNotReceived(
+        { event, productId: Number(productId), productName, qty, mode, receivedItem },
+        session.user.email,
       )
       return NextResponse.json({ success: true, ...result })
     }
