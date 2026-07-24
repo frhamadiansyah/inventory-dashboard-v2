@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
 import { updateEvent, deleteEvent, setEventActive, withActor } from "@/lib/db"
+import { invalidate } from "@/lib/route-cache"
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -23,6 +24,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       return NextResponse.json({ error: "isActive (boolean) is required" }, { status: 400 })
     }
     await withActor(session.user.email, (tx) => setEventActive(id, body.isActive, tx))
+    invalidate("events")
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error("Failed to toggle event active:", err)
@@ -57,6 +59,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
       warehouseId: warehouseId != null ? Number(warehouseId) : null,
       countryId: countryId != null ? Number(countryId) : null,
     }, tx))
+    invalidate("events")
 
     return NextResponse.json({ success: true })
   } catch (err) {
@@ -80,6 +83,7 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
 
   try {
     await withActor(session.user.email, (tx) => deleteEvent(id, tx))
+    invalidate("events")
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error("Failed to delete event:", err)

@@ -307,13 +307,13 @@ export default function ProductsPageClient() {
       id: "type",
       header: "Type",
       size: 100,
-      accessorFn: (row) => isAbroad(row) ? "Overseas" : "Domestic",
+      accessorFn: (row) => isAbroad(row) ? "Profit Margin" : "Tier Rp",
       filterFn: "textContains",
       cell: ({ row }) => {
         const abroad = isAbroad(row.original)
         return (
           <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${abroad ? "bg-blue-50 text-blue-600" : "bg-green-50 text-green-600"}`}>
-            {abroad ? "Overseas" : "Domestic"}
+            {abroad ? "Profit Margin" : "Tier Rp"}
           </span>
         )
       },
@@ -805,14 +805,14 @@ function AddProductForm({
             onClick={() => setType("overseas")}
             className={`px-3 py-1 transition-colors ${type === "overseas" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
           >
-            Overseas
+            Profit Margin
           </button>
           <button
             type="button"
             onClick={() => setType("domestic")}
             className={`px-3 py-1 transition-colors ${type === "domestic" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
           >
-            Domestic
+            Tier Rp
           </button>
         </div>
       </div>

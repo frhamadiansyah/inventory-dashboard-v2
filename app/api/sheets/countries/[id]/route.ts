@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
 import { updateCountry, deleteCountry, withActor } from "@/lib/db"
+import { invalidate } from "@/lib/route-cache"
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -31,6 +32,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
       kurs: Number(kurs ?? 0),
       cargoPerKg: Number(cargoPerKg ?? 0),
     }, tx))
+    invalidate("countries")
 
     return NextResponse.json({ success: true })
   } catch (err) {
@@ -54,6 +56,7 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
 
   try {
     await withActor(session.user.email, (tx) => deleteCountry(id, tx))
+    invalidate("countries")
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error("Failed to delete country:", err)

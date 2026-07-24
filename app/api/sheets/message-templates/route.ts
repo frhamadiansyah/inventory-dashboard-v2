@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireRole, requireOwner } from "@/lib/api"
 import { getMessageTemplates, updateMessageTemplate, withActor } from "@/lib/db"
+import { cached, invalidate } from "@/lib/route-cache"
 import { TEMPLATE_KEYS, findMissingTokens, type TemplateKey } from "@/lib/message-templates"
 
 export async function GET() {
@@ -11,7 +12,7 @@ export async function GET() {
   if (roleError) return roleError
 
   try {
-    const templates = await getMessageTemplates()
+    const templates = await cached("message-templates", getMessageTemplates)
     return NextResponse.json({ templates }, { headers: { "Cache-Control": "no-store" } })
   } catch (err) {
     console.error("Failed to fetch message templates:", err)
@@ -45,6 +46,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     await withActor(session.user.email, (tx) => updateMessageTemplate(key as TemplateKey, body, tx))
+    invalidate("message-templates")
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("Failed to update message template:", err)

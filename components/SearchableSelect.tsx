@@ -255,6 +255,8 @@ export default function SearchableSelect({
 
   const showClearRow = clearable && value && !hasQuery
   const showAddRow = allowNewValue && hasQuery && filtered.length === 0
+  // Inline × on the trigger — one-click reset to "" without opening the list.
+  const showInlineClear = clearable && !!value && !disabled
 
   return (
     <div ref={wrapperRef} className="relative">
@@ -270,8 +272,22 @@ export default function SearchableSelect({
         disabled={disabled}
         readOnly={!searchable}
         autoComplete="off"
-        className={`w-full border border-cream-border rounded-lg px-3 bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors disabled:opacity-50 disabled:cursor-not-allowed pr-8 ${!searchable ? "cursor-pointer" : ""} ${dense ? "h-[34px] py-0 text-xs" : "py-2 text-sm"}`}
+        className={`w-full border border-cream-border rounded-lg px-3 bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${showInlineClear ? "pr-14" : "pr-8"} ${!searchable ? "cursor-pointer" : ""} ${dense ? "h-[34px] py-0 text-xs" : "py-2 text-sm"}`}
       />
+      {showInlineClear && (
+        <button
+          type="button"
+          aria-label="Clear"
+          // mousedown (not click) + preventDefault so clearing doesn't focus the
+          // input and pop the dropdown open. Matches OptionItem's select pattern.
+          onMouseDown={(e) => { e.preventDefault(); selectOption("") }}
+          className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center text-gray-400 hover:text-gray-600"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+          </svg>
+        </button>
+      )}
       <svg
         className={`absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none transition-transform ${open ? "rotate-180" : ""}`}
         viewBox="0 0 20 20"

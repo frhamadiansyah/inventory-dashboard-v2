@@ -6,6 +6,10 @@ import postgres from "postgres"
 // path can never read or write PII / bank data even if a query is wrong.
 const connectionString = process.env.INVOICE_READER_DATABASE_URL!
 
+// Local dev DB (127.0.0.1) is plaintext; require SSL only for remote hosts.
+// See lib/db-pool.ts for the full rationale.
+const isLocalDb = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(connectionString)
+
 const publicSql = postgres(connectionString, {
   // Low ceiling: this is a single read per request on a low-traffic path.
   max: 3,
@@ -14,7 +18,7 @@ const publicSql = postgres(connectionString, {
   idle_timeout: 300,
   max_lifetime: 60 * 30,
   connect_timeout: 10,
-  ssl: "require",
+  ssl: isLocalDb ? false : "require",
   // Same transaction-mode pooler constraint as the main pool.
   prepare: false,
   connection: {

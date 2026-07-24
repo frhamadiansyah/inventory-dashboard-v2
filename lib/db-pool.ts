@@ -2,6 +2,11 @@ import postgres from "postgres"
 
 const connectionString = process.env.DATABASE_URL!
 
+// The local Supabase dev DB (127.0.0.1:54322) speaks plaintext — forcing SSL
+// there makes the TLS handshake reset ("socket disconnected before secure TLS
+// connection"). Require SSL only for remote hosts (the prod pooler).
+const isLocalDb = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(connectionString)
+
 // Reuse one pool across dev HMR reloads. Without this, every recompile that
 // touches a module importing lib/db* re-runs this file and stacks a fresh
 // pool on top of the old one's lingering sockets — eventually pressuring the
@@ -23,7 +28,7 @@ const sql = globalForDb.__dbPool ?? postgres(connectionString, {
   idle_timeout: 300,
   max_lifetime: 60 * 30,
   connect_timeout: 10,
-  ssl: "require",
+  ssl: isLocalDb ? false : "require",
   // Supabase's transaction-mode pooler (port 6543) reuses connections across
   // requests and doesn't support prepared statements. Disabling prepares
   // avoids "prepared statement does not exist" (SQLSTATE 26000) errors.

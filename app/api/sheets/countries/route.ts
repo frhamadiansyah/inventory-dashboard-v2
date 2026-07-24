@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
 import { getCountries, addCountry, withActor } from "@/lib/db"
+import { cached, invalidate } from "@/lib/route-cache"
 
 export async function GET() {
   const { session, error: authError } = await requireSession()
@@ -10,7 +11,7 @@ export async function GET() {
   if (ownerError) return ownerError
 
   try {
-    const rows = await getCountries()
+    const rows = await cached("countries", getCountries)
     return NextResponse.json({ rows }, { headers: { "Cache-Control": "no-store" } })
   } catch (err) {
     console.error("Failed to fetch countries:", err)
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
       kurs: Number(kurs ?? 0),
       cargoPerKg: Number(cargoPerKg ?? 0),
     }, tx))
+    invalidate("countries")
 
     return NextResponse.json({ success: true, id: result.id })
   } catch (err) {

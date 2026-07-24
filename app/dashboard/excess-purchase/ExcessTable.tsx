@@ -711,7 +711,7 @@ function InventoryFields({
   const eventField = (
     <label className="flex flex-col gap-1 min-w-0">
       <span className="text-xs font-medium text-gray-500">Event</span>
-      <EventSelect value={event} onChange={setEvent} events={eventOptions} placeholder="Select event…" disabled={saving} />
+      <EventSelect value={event} onChange={setEvent} events={eventOptions} placeholder="Select event…" clearable disabled={saving} />
     </label>
   )
   const itemField = (
@@ -796,7 +796,7 @@ function AddInventoryCard({
   const [error, setError] = useState<string | null>(null)
 
   const qtyNum = Math.round(Number(unitBuy)) || 0
-  const valid = event.trim() !== "" && items.trim() !== "" && qtyNum >= 1
+  const valid = items.trim() !== "" && qtyNum >= 1
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -878,7 +878,7 @@ function EditInventoryModal({
   const [error, setError] = useState<string | null>(null)
 
   const qtyNum = Math.round(Number(unitBuy)) || 0
-  const valid = event.trim() !== "" && items.trim() !== "" && qtyNum >= 1
+  const valid = items.trim() !== "" && qtyNum >= 1
 
   async function handleSubmit() {
     if (!valid) return

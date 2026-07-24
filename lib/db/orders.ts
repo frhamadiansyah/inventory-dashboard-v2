@@ -933,7 +933,9 @@ export async function appendExcessPurchase(
   await db`
     INSERT INTO excess_purchase ${db(
       rows.map((r) => ({
-        event: r.event,
+        // Blank event → NULL: manual "Add Inventory" rows may have no event.
+        // Auto-spill callers always pass a real event, so this is a no-op there.
+        event: r.event || null,
         items: r.items,
         unit_buy: r.unitBuy,
         receipt: r.receipt,
@@ -970,8 +972,9 @@ export async function updateExcessRow(
   db: DBExecutor = sql,
 ): Promise<void> {
   const fields: string[] = []
-  const params: (string | number)[] = []
-  if (data.event !== undefined) { params.push(data.event); fields.push(`event = $${params.length}`) }
+  const params: (string | number | null)[] = []
+  // Blank event → NULL so clearing the event on edit passes the FK (NULL is exempt).
+  if (data.event !== undefined) { params.push(data.event || null); fields.push(`event = $${params.length}`) }
   if (data.items !== undefined) { params.push(data.items); fields.push(`items = $${params.length}`) }
   if (data.unitBuy !== undefined) { params.push(data.unitBuy); fields.push(`unit_buy = $${params.length}`) }
   if (data.receipt !== undefined) { params.push(data.receipt); fields.push(`receipt = $${params.length}`) }

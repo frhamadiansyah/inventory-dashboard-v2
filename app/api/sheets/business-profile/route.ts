@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireRole, requireOwner } from "@/lib/api"
 import { getBusinessProfile, updateBusinessProfile, withActor } from "@/lib/db"
+import { cached, invalidate } from "@/lib/route-cache"
 
 export async function GET() {
   const { session, error: authError } = await requireSession()
@@ -10,7 +11,7 @@ export async function GET() {
   if (roleError) return roleError
 
   try {
-    const profile = await getBusinessProfile()
+    const profile = await cached("business-profile", getBusinessProfile)
     return NextResponse.json({ profile }, { headers: { "Cache-Control": "no-store" } })
   } catch (err) {
     console.error("Failed to fetch business profile:", err)
@@ -38,6 +39,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     await withActor(session.user.email, (tx) => updateBusinessProfile(profile, tx))
+    invalidate("business-profile")
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("Failed to update business profile:", err)

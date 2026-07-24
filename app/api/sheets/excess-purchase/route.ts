@@ -187,15 +187,16 @@ export async function PUT(req: NextRequest) {
       receipt?: string
     }
 
-    if (!event || !items || typeof unitBuy !== "number" || unitBuy < 1) {
+    // event is optional — inventory can be logged before it's tied to an event.
+    if (!items || typeof unitBuy !== "number" || unitBuy < 1) {
       return NextResponse.json(
-        { error: "event, items and a positive unitBuy are required" },
+        { error: "items and a positive unitBuy are required" },
         { status: 400 },
       )
     }
 
     await withActor(session.user.email, (tx) => appendExcessPurchase(
-      [{ event, items, unitBuy, receipt: receipt ? String(receipt).trim() : "", reason: "manual" }],
+      [{ event: event ?? "", items, unitBuy, receipt: receipt ? String(receipt).trim() : "", reason: "manual" }],
       tx,
     ))
 

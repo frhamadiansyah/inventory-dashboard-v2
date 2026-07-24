@@ -67,16 +67,14 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json()
-    if (!String(body.event ?? "").trim()) {
-      return NextResponse.json({ error: "event is required" }, { status: 400 })
-    }
+    // event is optional — some operating costs aren't tied to a trip/event.
     const category = String(body.category ?? "").trim() as ExpenseCategory
     if (!category) {
       return NextResponse.json({ error: "category is required" }, { status: 400 })
     }
 
     const result = await withActor(session.user.email, (tx) => addOperationalExpense({
-      event: String(body.event).trim(),
+      event: String(body.event ?? "").trim(),
       expenseDate: String(body.expenseDate ?? "").trim(),
       description: String(body.description ?? "").trim(),
       category,

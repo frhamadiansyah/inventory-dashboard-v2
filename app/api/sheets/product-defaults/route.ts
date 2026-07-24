@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireRole, requireOwner } from "@/lib/api"
 import { getProductDefaults, updateProductDefaults, withActor } from "@/lib/db"
+import { cached, invalidate } from "@/lib/route-cache"
 
 export async function GET() {
   const { session, error: authError } = await requireSession()
@@ -10,7 +11,7 @@ export async function GET() {
   if (roleError) return roleError
 
   try {
-    const defaults = await getProductDefaults()
+    const defaults = await cached("product-defaults", getProductDefaults)
     return NextResponse.json({ defaults }, { headers: { "Cache-Control": "no-store" } })
   } catch (err) {
     console.error("Failed to fetch product defaults:", err)
@@ -39,6 +40,7 @@ export async function PATCH(req: NextRequest) {
     await withActor(session.user.email, (tx) =>
       updateProductDefaults({ profitPct, operationalFee, packingFee, markupPct }, tx),
     )
+    invalidate("product-defaults")
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("Failed to update product defaults:", err)
