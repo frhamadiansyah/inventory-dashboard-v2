@@ -749,8 +749,9 @@ export async function getExcessPurchasePaginated(opts: {
 }
 
 /**
- * Zero the given order lines (unit + unit_buy → 0), keeping the rows for
- * history. Used when an order can't be fulfilled (wrong/broken delivery): each
+ * Zero the given order lines (unit + unit_buy + unit_dispatch + unit_arrive → 0),
+ * keeping the rows for history so they drop off the shopping/dispatch/arrival
+ * lists. Used when an order can't be fulfilled (wrong/broken delivery): each
  * invoice drops, so the existing overpayment materialization auto-creates a
  * refund for any customer who already paid. Returns rows affected.
  */
