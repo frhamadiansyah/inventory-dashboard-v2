@@ -766,6 +766,30 @@ export async function cancelOrderLines(orderIds: number[], db: DBExecutor = sql)
 }
 
 /**
+ * Cancel only the *un-dispatched remainder* of the given orders: drop the bought
+ * units that haven't been dispatched yet (unit_buy → unit_dispatch) and reduce
+ * the ordered count by the same amount (unit -= unit_buy - unit_dispatch) so
+ * those units fall off the customer's invoice — the overpayment materialization
+ * then auto-refunds anyone who paid. Already-dispatched units (unit_dispatch)
+ * stay put, and nothing is logged to Inventory. Rows with nothing pending
+ * (unit_buy <= unit_dispatch) are left untouched. Since qty = unit_buy -
+ * unit_dispatch and unit >= unit_buy, the new unit never drops below the
+ * retained unit_dispatch — the invariant unit >= unit_buy >= unit_dispatch holds.
+ */
+export async function cancelUndispatchedRemainder(orderIds: number[], db: DBExecutor = sql): Promise<number> {
+  if (orderIds.length === 0) return 0
+  const res = await db`
+    UPDATE orders
+    SET unit = unit - (COALESCE(unit_buy, 0) - COALESCE(unit_dispatch, 0)),
+        unit_buy = COALESCE(unit_dispatch, 0),
+        updated_at = NOW()
+    WHERE id = ANY(${orderIds})
+      AND COALESCE(unit_buy, 0) > COALESCE(unit_dispatch, 0)
+  `
+  return res.count
+}
+
+/**
  * Wrong-product delivery for overseas events where the expected item can't be
  * re-ordered. In one audited transaction:
  *  - log the received SKU to excess_purchase as ready stock (reason=wrong_product), and

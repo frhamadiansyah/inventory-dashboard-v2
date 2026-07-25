@@ -898,8 +898,6 @@ function ConfirmCancelPanel({
     return m
   }, [items])
 
-  // Cancel zeroes the whole order line, so every open order for these items is
-  // affected (not just the un-dispatched remainder).
   const orderIds = useMemo(() => items.flatMap((it) => it.orderIds), [items])
 
   async function handleSubmit() {
@@ -934,7 +932,7 @@ function ConfirmCancelPanel({
             Cancel {items.length} item{items.length === 1 ? "" : "s"}?
           </h3>
           <p className="text-xs text-red-600 mt-0.5">
-            Zeroes the affected customer orders (units &amp; bought qty → 0) and refunds anyone who paid. Nothing is added to Inventory. This can&rsquo;t be undone.
+            Cancels only the un-dispatched units and refunds anyone who paid for them. Already-dispatched units stay. Nothing is added to Inventory. This can&rsquo;t be undone.
           </p>
         </div>
 

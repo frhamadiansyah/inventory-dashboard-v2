@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
-import { getDispatchList, getDuplicateFormRowsForEvent, bulkUpdateDispatch, cancelOrderLines, withActor, fetchPaidStatusMap, PAID_PRIORITY_RANK, type PaidStatus } from "@/lib/db"
+import { getDispatchList, getDuplicateFormRowsForEvent, bulkUpdateDispatch, cancelUndispatchedRemainder, withActor, fetchPaidStatusMap, PAID_PRIORITY_RANK, type PaidStatus } from "@/lib/db"
 
 type ItemLine = { item: string; qty: number }
 type UpdatedRow = { rowNumber: number; customer: string; oldUnitDispatch: number; unitDispatch: number }
@@ -102,10 +102,11 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
 
-    // Cancel path: zero the chosen orders (unit + unit_buy → 0, and
-    // dispatch/arrive too) so the items drop off every list and each customer's
-    // invoice falls — the existing overpayment materialization then auto-refunds
-    // anyone who paid. Nothing is logged to Inventory (unlike customer_cancelled).
+    // Cancel path: drop only the un-dispatched remainder of the chosen orders
+    // (unit_buy → unit_dispatch, and reduce unit by the same amount) so those
+    // units fall off each customer's invoice — the overpayment materialization
+    // then auto-refunds anyone who paid. Already-dispatched units stay, and
+    // nothing is logged to Inventory (unlike customer_cancelled).
     if (body.action === "cancel") {
       const orderIds = Array.isArray(body.orderIds)
         ? (body.orderIds.filter((n: unknown) => Number.isInteger(n)) as number[])
@@ -113,7 +114,7 @@ export async function POST(req: NextRequest) {
       if (orderIds.length === 0) {
         return NextResponse.json({ error: "orderIds are required" }, { status: 400 })
       }
-      const cancelled = await withActor(session.user.email, (tx) => cancelOrderLines(orderIds, tx))
+      const cancelled = await withActor(session.user.email, (tx) => cancelUndispatchedRemainder(orderIds, tx))
       return NextResponse.json({ cancelled })
     }
 
