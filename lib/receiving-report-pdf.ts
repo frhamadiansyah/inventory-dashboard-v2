@@ -36,15 +36,14 @@ const CONTENT_W = PAGE_W - MARGIN * 2
 const BOTTOM = PAGE_H - MARGIN
 
 // Column x-positions / widths. Units is right-aligned at the right edge.
+// Columns: EVENT · RECEIPT · PRODUCT · UNITS (store intentionally omitted).
 const COL_EVENT_X = MARGIN
 const COL_RECEIPT_X = MARGIN + 36
-const COL_STORE_X = MARGIN + 78
-const COL_PRODUCT_X = MARGIN + 106
+const COL_PRODUCT_X = MARGIN + 78
 const COL_UNITS_R = PAGE_W - MARGIN
 const PRODUCT_W = COL_UNITS_R - COL_PRODUCT_X - 14
 const EVENT_W = COL_RECEIPT_X - COL_EVENT_X - 3
-const RECEIPT_W = COL_STORE_X - COL_RECEIPT_X - 3
-const STORE_W = COL_PRODUCT_X - COL_STORE_X - 3
+const RECEIPT_W = COL_PRODUCT_X - COL_RECEIPT_X - 3
 
 const LINE_H = 5
 
@@ -94,7 +93,6 @@ export async function generateReceivedReport({
     doc.setFontSize(8.5)
     doc.text("EVENT", COL_EVENT_X, y)
     doc.text("RECEIPT", COL_RECEIPT_X, y)
-    doc.text("STORE", COL_STORE_X, y)
     doc.text("PRODUCT", COL_PRODUCT_X, y)
     doc.text("UNITS", COL_UNITS_R, y, { align: "right" })
     y += 2
@@ -123,8 +121,7 @@ export async function generateReceivedReport({
     const productLines = doc.splitTextToSize(item.productName, PRODUCT_W) as string[]
     const eventLines = doc.splitTextToSize(item.event, EVENT_W) as string[]
     const receiptLines = doc.splitTextToSize(item.dispatchReceipt || "—", RECEIPT_W) as string[]
-    const storeLines = doc.splitTextToSize(item.store || "—", STORE_W) as string[]
-    const rowH = Math.max(productLines.length, eventLines.length, receiptLines.length, storeLines.length) * LINE_H
+    const rowH = Math.max(productLines.length, eventLines.length, receiptLines.length) * LINE_H
 
     // Page break before drawing a row that would overflow.
     if (y + rowH > BOTTOM) {
@@ -138,7 +135,6 @@ export async function generateReceivedReport({
 
     doc.text(eventLines, COL_EVENT_X, y + 3.5)
     doc.text(receiptLines, COL_RECEIPT_X, y + 3.5)
-    doc.text(storeLines, COL_STORE_X, y + 3.5)
     doc.text(productLines, COL_PRODUCT_X, y + 3.5)
     doc.text(String(item.unitsReceived), COL_UNITS_R, y + 3.5, { align: "right" })
 
