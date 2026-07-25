@@ -29,6 +29,9 @@ export function CancelOrderFromInvoiceModal({
   useModalDismiss(onClose)
 
   const [qty, setQty] = useState(String(line.unit))
+  // Tags the returned-to-inventory stock; defaults to the customer's username so
+  // it's traceable to who cancelled (editable).
+  const [receipt, setReceipt] = useState(customer)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Actual units returned to Inventory, filled from the server response so the
@@ -56,6 +59,7 @@ export function CancelOrderFromInvoiceModal({
           productName,
           orderId: line.orderId,
           qty: qtyNum,
+          receipt,
         }),
       })
       const data = await res.json()
@@ -133,6 +137,22 @@ export function CancelOrderFromInvoiceModal({
                   <span className="text-xs text-red-500">Enter a number between 1 and {line.unit}.</span>
                 )}
               </label>
+
+              {previewReturn > 0 && (
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-gray-500">
+                    Inventory receipt <span className="text-gray-400 font-normal">(tags the returned stock)</span>
+                  </span>
+                  <input
+                    type="text"
+                    value={receipt}
+                    onChange={(e) => setReceipt(e.target.value)}
+                    disabled={saving}
+                    placeholder="e.g. customer username"
+                    className="w-full border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
+                  />
+                </label>
+              )}
 
               <ul className="flex flex-col gap-1.5 text-xs">
                 <li className="flex gap-2">

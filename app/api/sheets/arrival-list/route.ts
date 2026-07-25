@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
     // assignable to the next order) and cancel the chosen orders (refunds
     // auto-materialize if paid).
     if (body.action === "customer_cancelled") {
-      const { event, productName } = body
+      const { event, productName, receipt } = body
       const cancelOrderIds = Array.isArray(body.cancelOrderIds)
         ? body.cancelOrderIds.filter((n: unknown) => Number.isInteger(n)) as number[]
         : []
@@ -110,7 +110,7 @@ export async function POST(req: NextRequest) {
         )
       }
       const result = await withActor(session.user.email, (tx) =>
-        recordCustomerCancellation({ event, productName, cancelOrderIds }, tx),
+        recordCustomerCancellation({ event, productName, cancelOrderIds, receipt: typeof receipt === "string" ? receipt : undefined }, tx),
       )
       return NextResponse.json({ success: true, ...result })
     }

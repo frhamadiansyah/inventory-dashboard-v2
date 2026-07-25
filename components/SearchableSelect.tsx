@@ -23,6 +23,8 @@ interface Props {
   alwaysShowAll?: boolean
   /** Click-only mode: no typing/filtering, just open the list and pick. */
   searchable?: boolean
+  /** Also match the query against each option's `meta` (e.g. a phone number). */
+  searchMeta?: boolean
   /** Shorter trigger input (34px) instead of the default 38px */
   dense?: boolean
 }
@@ -37,6 +39,7 @@ export default function SearchableSelect({
   allowNewValue = false,
   alwaysShowAll = false,
   searchable = true,
+  searchMeta = false,
   dense = false,
 }: Props) {
   const selectedLabel = useMemo(
@@ -85,10 +88,13 @@ export default function SearchableSelect({
   const filtered = useMemo(() => {
     // Click-only mode never filters — always show the full list.
     if (!searchable) return options
-    if (debouncedQuery) return options.filter((o) => o.label.toLowerCase().includes(debouncedQuery))
+    if (debouncedQuery) return options.filter((o) =>
+      o.label.toLowerCase().includes(debouncedQuery) ||
+      (searchMeta && (o.meta ?? "").toLowerCase().includes(debouncedQuery)),
+    )
     if (LARGE_LIST && !alwaysShowAll) return []
     return options
-  }, [debouncedQuery, options, LARGE_LIST, alwaysShowAll, searchable])
+  }, [debouncedQuery, options, LARGE_LIST, alwaysShowAll, searchable, searchMeta])
 
   useEffect(() => { setHighlightIdx((i) => (i === -1 ? i : -1)) }, [filtered])
 
@@ -98,7 +104,12 @@ export default function SearchableSelect({
     const rect = inputRef.current?.getBoundingClientRect()
     if (!rect) return
     const POPUP_HEIGHT = 260
-    const spaceBelow = window.innerHeight - rect.bottom
+    // Decide above/below using the *visible* height (visualViewport shrinks when
+    // the mobile keyboard is open; window.innerHeight does not) so the list never
+    // opens behind the keyboard. The fixed `bottom` anchor stays keyed to the
+    // layout viewport (window.innerHeight), which is what position:fixed uses.
+    const visibleHeight = window.visualViewport?.height ?? window.innerHeight
+    const spaceBelow = visibleHeight - rect.bottom
     if (spaceBelow < POPUP_HEIGHT && rect.top > POPUP_HEIGHT) {
       setPopupStyle({ position: "fixed", bottom: window.innerHeight - rect.top + 4, left: rect.left, width: rect.width })
     } else {
@@ -177,16 +188,26 @@ export default function SearchableSelect({
   }, [open, closeDropdown])
 
   // The popup is position:fixed, positioned from the input's rect at open time.
-  // Re-run that positioning on scroll/resize so it tracks the field instead of
-  // floating free (capture phase catches scrolling in any ancestor container).
+  // Re-run that positioning whenever the field could move so it tracks the field
+  // instead of floating free:
+  //  - window scroll (capture phase catches scrolling in any ancestor container)
+  //  - window resize
+  //  - visualViewport resize/scroll — the ONLY events the mobile keyboard fires
+  //    when it opens/closes and pans the viewport. Without these the popup keeps
+  //    its pre-keyboard coordinates and appears detached from the input.
   useEffect(() => {
     if (!open) return
     const reposition = () => positionPopup()
     window.addEventListener("scroll", reposition, true)
     window.addEventListener("resize", reposition)
+    const vv = window.visualViewport
+    vv?.addEventListener("resize", reposition)
+    vv?.addEventListener("scroll", reposition)
     return () => {
       window.removeEventListener("scroll", reposition, true)
       window.removeEventListener("resize", reposition)
+      vv?.removeEventListener("resize", reposition)
+      vv?.removeEventListener("scroll", reposition)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])

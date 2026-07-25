@@ -648,7 +648,7 @@ export default function OperationalExpensesClient() {
             </div>
             <div className="flex items-center justify-between gap-3 mt-2.5 pt-2.5 border-t border-cream-border">
               <span className="text-xs text-gray-400 min-w-0 truncate uppercase">
-                {x.event} · {formatDate(x.expenseDate)}{x.method ? ` · ${x.method}` : ""}
+                {x.event ? `${x.event} · ` : ""}{formatDate(x.expenseDate)}{x.method ? ` · ${x.method}` : ""}
               </span>
               <span className="text-sm font-semibold tabular-nums text-foreground whitespace-nowrap">Rp {fmt(x.amountIdr)}</span>
             </div>

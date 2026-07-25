@@ -881,9 +881,26 @@ function ArriveModal({
   const [cancelIds, setCancelIds] = useState<Set<number>>(() => new Set(item.orders.map((o) => o.id)))
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // Receipt tagging the returned-to-inventory stock on a customer cancellation.
+  // Defaults to the checked orders' customer usernames (tracks the checkboxes
+  // until the operator edits it).
+  const [receipt, setReceipt] = useState("")
+  const [receiptTouched, setReceiptTouched] = useState(false)
 
   const quantityArrived = Math.max(0, Number(qty) || 0)
   const preview = computeFill(item.orders, quantityArrived)
+
+  // Distinct usernames of the currently-checked orders, joined — the default
+  // receipt for the customer-cancelled path.
+  const cancelledCustomers = useMemo(() => {
+    const seen = new Set<string>()
+    const names: string[] = []
+    for (const o of item.orders) {
+      if (cancelIds.has(o.id) && !seen.has(o.customer)) { seen.add(o.customer); names.push(o.customer) }
+    }
+    return names.join(", ")
+  }, [item.orders, cancelIds])
+  const receiptValue = receiptTouched ? receipt : cancelledCustomers
   // Wrong-product needs a received SKU that differs from the expected one.
   const wrongValid = receivedItem.trim() !== "" && receivedItem !== item.productName
 
@@ -964,6 +981,7 @@ function ArriveModal({
             action: "customer_cancelled",
             event: item.event,
             productName: item.productName,
+            receipt: receiptValue,
             cancelOrderIds: [...cancelIds],
           }),
         })
@@ -1129,6 +1147,21 @@ function ArriveModal({
                   : ""}
                 Checked orders are removed from the invoice and refunded if paid; unchecked orders stay pending.
               </p>
+              {mode === "cancelled" && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-yellow-700">
+                    Inventory receipt <span className="text-gray-400 font-normal">(tags the returned stock)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={receiptValue}
+                    onChange={(e) => { setReceipt(e.target.value); setReceiptTouched(true) }}
+                    disabled={saving}
+                    placeholder="e.g. customer username"
+                    className="w-full border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
+                  />
+                </div>
+              )}
             </div>
           </>
         )}

@@ -27,11 +27,6 @@ export interface DispatchListItem {
   store: string
   totalUnits: number      // remaining to dispatch
   totalOriginal: number   // full bought qty (SUM(unit_buy), for partial-state display)
-  // Purchase cost in the product's foreign currency, for the cargo document.
-  // valas = unit price in that currency; currency = its code (product's country).
-  // 0 / "" when the product has none.
-  valas: number
-  currency: string
   customerCount: number
   customers: string[]
   orderIds: number[]
@@ -60,8 +55,6 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             o.product_id,
             p.name AS product_name,
             p.store,
-            p.valas,
-            COALESCE(c.currency, '') AS currency,
             SUM(o.unit_buy - COALESCE(o.unit_dispatch, 0))::int AS total_pending,
             prod_total.total_original,
             COUNT(DISTINCT o.customer)::int AS customer_count,
@@ -76,7 +69,6 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             ) ORDER BY o.customer, o.id) AS orders
           FROM orders o
           JOIN products p ON p.id = o.product_id
-          LEFT JOIN countries c ON c.id = p.country_id
           -- Full bought qty spans ALL bought orders for the product (including
           -- the fully-dispatched rows the WHERE below filters out), so the UI
           -- shows "remaining / total bought" rather than "remaining / open rows".
@@ -87,7 +79,7 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             GROUP BY event, product_id
           ) prod_total ON prod_total.event = o.event AND prod_total.product_id = o.product_id
           WHERE (o.unit_buy IS NOT NULL AND (o.unit_dispatch IS NULL OR o.unit_dispatch < o.unit_buy)) AND o.event = ${event}
-          GROUP BY o.event, o.product_id, p.name, p.store, p.valas, c.currency, prod_total.total_original
+          GROUP BY o.event, o.product_id, p.name, p.store, prod_total.total_original
           HAVING SUM(o.unit_buy - COALESCE(o.unit_dispatch, 0)) > 0
           ORDER BY p.name, p.store
         `
@@ -97,8 +89,6 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             o.product_id,
             p.name AS product_name,
             p.store,
-            p.valas,
-            COALESCE(c.currency, '') AS currency,
             SUM(o.unit_buy - COALESCE(o.unit_dispatch, 0))::int AS total_pending,
             prod_total.total_original,
             COUNT(DISTINCT o.customer)::int AS customer_count,
@@ -113,7 +103,6 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             ) ORDER BY o.customer, o.id) AS orders
           FROM orders o
           JOIN products p ON p.id = o.product_id
-          LEFT JOIN countries c ON c.id = p.country_id
           JOIN events e ON e.name = o.event
           -- Full bought qty spans ALL bought orders for the (event, product),
           -- including the fully-dispatched rows the WHERE below filters out.
@@ -124,7 +113,7 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
             GROUP BY event, product_id
           ) prod_total ON prod_total.event = o.event AND prod_total.product_id = o.product_id
           WHERE o.unit_buy IS NOT NULL AND (o.unit_dispatch IS NULL OR o.unit_dispatch < o.unit_buy)
-          GROUP BY o.event, o.product_id, p.name, p.store, p.valas, c.currency, prod_total.total_original
+          GROUP BY o.event, o.product_id, p.name, p.store, prod_total.total_original
           HAVING SUM(o.unit_buy - COALESCE(o.unit_dispatch, 0)) > 0
           -- Most recently created event first (matches the dashboard's event
           -- ordering); product name then store within each event. MAX() because
@@ -150,8 +139,6 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
     productId: r.product_id as number,
     productName: r.product_name as string,
     store: r.store as string,
-    valas: Number(r.valas) || 0,
-    currency: (r.currency as string) ?? "",
     totalUnits: r.total_pending as number,
     totalOriginal: r.total_original as number,
     customerCount: r.customer_count as number,
@@ -173,4 +160,85 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
   }
 
   return items
+}
+
+// ─── Dispatch Document ──────────────────────────────────────────────────────
+
+export interface DispatchDocLine {
+  productName: string
+  qty: number
+  valas: number
+  currency: string
+  receipt: string
+}
+
+/**
+ * Per-(dispatch_receipt, product) tally of *dispatched* units for one event, for
+ * the cargo-style dispatch document. `receipt` is an optional case-insensitive
+ * SUBSTRING match on the receipt (e.g. "MNC" matches "MNC38179"); empty/absent =
+ * every dispatched batch for the event. valas/currency come from the product and
+ * its country, so the cargo template can price and group the lines by currency.
+ *
+ * Read from the append-only `audit.audit_log` (migration 029) rather than the
+ * orders table, because a single order dispatched in several batches accumulates
+ * its receipts comma-joined in one `dispatch_receipt` field (the dispatch route
+ * appends `"<existing>, <new>"`) while `unit_dispatch` holds only the running
+ * total — so the orders row alone can't say how many units went under each
+ * receipt. Each dispatch UPDATE is one audit entry: the per-row delta
+ * `new.unit_dispatch − old.unit_dispatch` is that batch's qty, and the newly
+ * appended tail of `dispatch_receipt` (everything after the old value + ", ") is
+ * that batch's receipt. Summing per (receipt, product) gives an accurate row for
+ * each receipt. A batch dispatched without a tracking ref leaves the string
+ * unchanged, so its receipt resolves to '' (shown as "—").
+ */
+export async function getDispatchDocument(
+  event: string,
+  receipt?: string | null,
+): Promise<DispatchDocLine[]> {
+  const receiptFilter =
+    receipt && receipt.trim()
+      ? sql`AND batch.receipt ILIKE '%' || ${receipt.trim()} || '%'`
+      : sql``
+  const rows = await sql`
+    SELECT
+      p.name AS product_name,
+      p.valas,
+      COALESCE(c.currency, '') AS currency,
+      batch.receipt AS receipt,
+      SUM(batch.qty)::int AS qty
+    FROM (
+      SELECT
+        (a.new_row->>'product_id')::int AS product_id,
+        COALESCE((a.new_row->>'unit_dispatch')::int, 0)
+          - COALESCE((a.old_row->>'unit_dispatch')::int, 0) AS qty,
+        CASE
+          WHEN COALESCE(a.old_row->>'dispatch_receipt', '') = ''
+            THEN COALESCE(a.new_row->>'dispatch_receipt', '')
+          ELSE substring(
+            COALESCE(a.new_row->>'dispatch_receipt', '')
+            FROM char_length(a.old_row->>'dispatch_receipt') + 3
+          )
+        END AS receipt
+      FROM audit.audit_log a
+      WHERE a.table_name = 'orders'
+        AND a.action IN ('INSERT', 'UPDATE')
+        AND (a.new_row->>'event') = ${event}
+        AND COALESCE((a.new_row->>'unit_dispatch')::int, 0)
+            > COALESCE((a.old_row->>'unit_dispatch')::int, 0)
+    ) batch
+    JOIN products p ON p.id = batch.product_id
+    LEFT JOIN countries c ON c.id = p.country_id
+    WHERE TRUE
+      ${receiptFilter}
+    GROUP BY p.id, c.currency, batch.receipt
+    HAVING SUM(batch.qty) > 0
+    ORDER BY batch.receipt, p.name
+  `
+  return rows.map((r) => ({
+    productName: r.product_name as string,
+    qty: r.qty as number,
+    valas: Number(r.valas) || 0,
+    currency: (r.currency as string) ?? "",
+    receipt: (r.receipt as string) ?? "",
+  }))
 }

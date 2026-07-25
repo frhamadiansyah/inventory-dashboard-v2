@@ -7,7 +7,6 @@ import type { PaidStatus, DispatchListItem, DispatchListOrder } from "@/lib/db"
 import { useSheetOptions } from "@/hooks/useSheetOptions"
 import { allocateFifo } from "@/lib/fifo-fill"
 import { fetchJson } from "@/lib/api-fetch"
-import { generateCargoDocument } from "@/lib/cargo-document-pdf"
 import DispatchModal from "./DispatchModal"
 import EventSelect from "@/components/EventSelect"
 import SearchInput from "@/components/SearchInput"
@@ -260,7 +259,7 @@ export default function DispatchListClient() {
   // Multi-select for marking several items dispatched under one shared tracking ref.
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [confirmOpen, setConfirmOpen] = useState(false)
-  const [cargoOpen, setCargoOpen] = useState(false)
+  const [cancelOpen, setCancelOpen] = useState(false)
 
   const fetchItems = useCallback((event?: string, silent = false) => {
     if (!silent) setLoading(true)
@@ -428,7 +427,7 @@ export default function DispatchListClient() {
               <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-44">Event</th>
               <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-36">Store</th>
               <th className="text-left px-4 py-2.5 font-medium text-gray-500">Product</th>
-              <th className="text-right px-4 py-2.5 font-medium text-gray-500 w-14">Qty</th>
+              <th className="text-right px-4 py-2.5 font-medium text-gray-500 w-20">Qty</th>
               <th className="px-4 py-2.5 w-10" />
             </tr>
           </thead>
@@ -521,7 +520,7 @@ export default function DispatchListClient() {
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-right">
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
                     <span className="tabular-nums font-bold text-foreground">{row.item.totalUnits}</span>
                     {row.item.totalUnits < row.item.totalOriginal && (
                       <span className="text-xs text-gray-400 font-normal tabular-nums" title="Partially dispatched">
@@ -642,23 +641,23 @@ export default function DispatchListClient() {
           onClear={clearSelection}
           actions={[
             {
-              label: "Cargo",
-              color: "brand",
-              onClick: () => setCargoOpen(true),
-              icon: (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                  <path d="M14 2v6h6" />
-                </svg>
-              ),
-            },
-            {
               label: "Dispatched",
               color: "green",
               onClick: () => setConfirmOpen(true),
               icon: (
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ),
+            },
+            {
+              label: "Cancelled",
+              color: "red",
+              onClick: () => setCancelOpen(true),
+              icon: (
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M15 9l-6 6M9 9l6 6" />
                 </svg>
               ),
             },
@@ -685,13 +684,14 @@ export default function DispatchListClient() {
         />
       )}
 
-      {cargoOpen && (
-        <CargoDocPanel
+      {cancelOpen && (
+        <ConfirmCancelPanel
           items={selectedItems}
-          onClose={() => setCargoOpen(false)}
-          onGenerated={() => { setCargoOpen(false); clearSelection() }}
+          onClose={() => setCancelOpen(false)}
+          onSuccess={() => { clearSelection(); setCancelOpen(false); handleDispatchedSuccess() }}
         />
       )}
+
     </>
   )
 }
@@ -868,6 +868,119 @@ function ConfirmDispatchPanel({
   )
 }
 
+// ─── Confirm multi-cancel panel ─────────────────────────────────────────────
+
+function ConfirmCancelPanel({
+  items,
+  onClose,
+  onSuccess,
+}: {
+  items: DispatchListItem[]
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onClose])
+
+  const byEvent = useMemo(() => {
+    const m = new Map<string, DispatchListItem[]>()
+    for (const it of items) {
+      const arr = m.get(it.event) ?? []
+      arr.push(it)
+      m.set(it.event, arr)
+    }
+    return m
+  }, [items])
+
+  const orderIds = useMemo(() => items.flatMap((it) => it.orderIds), [items])
+
+  async function handleSubmit() {
+    if (orderIds.length === 0 || submitting) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await fetch("/api/sheets/dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "cancel", orderIds }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "Failed to cancel")
+      onSuccess()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to cancel")
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl border border-cream-border w-full max-w-lg flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="px-5 py-4 border-b border-cream-border shrink-0">
+          <h3 className="text-sm font-semibold text-foreground">
+            Cancel {items.length} item{items.length === 1 ? "" : "s"}?
+          </h3>
+          <p className="text-xs text-red-600 mt-0.5">
+            Cancels only the un-dispatched units and refunds anyone who paid for them. Already-dispatched units stay. Nothing is added to Inventory. This can&rsquo;t be undone.
+          </p>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto min-h-0 flex flex-col gap-4">
+          {[...byEvent.entries()].map(([event, evItems]) => (
+            <div key={event} className="flex flex-col gap-2">
+              <div className="text-xs font-semibold text-gray-500">{event}</div>
+              {evItems.map((it) => (
+                <div key={selKey(it)} className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-foreground break-words">{it.productName}</div>
+                    {it.store && <div className="text-[11px] text-gray-400">{it.store}</div>}
+                  </div>
+                  <span className="text-[11px] text-gray-400 shrink-0">
+                    {it.customerCount} customer{it.customerCount === 1 ? "" : "s"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div className="px-5 py-4 border-t border-cream-border shrink-0 flex flex-col gap-3">
+          {error && <p className="text-xs text-red-600">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors"
+            >
+              Keep
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={submitting || orderIds.length === 0}
+              className="px-4 py-1.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 transition-colors"
+            >
+              {submitting ? "Cancelling…" : "Cancel orders"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Dispatch item modal (single product, per-row action) ──────────────────
 
 function DispatchItemModal({
@@ -1026,189 +1139,6 @@ function DispatchItemModal({
           >
             {saving ? "Saving…" : "Mark dispatched"}
           </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Cargo document panel ────────────────────────────────────────────────────
-
-// Money with thousands separators and up to 2 decimals (drops trailing zeros).
-const fmtValas = (n: number) =>
-  n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })
-
-// Today in Asia/Jakarta as YYYY-MM-DD, so the document is dated by business day
-// regardless of the browser's timezone.
-function jakartaToday(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(new Date())
-}
-
-function CargoDocPanel({
-  items,
-  onClose,
-  onGenerated,
-}: {
-  items: DispatchListItem[]
-  onClose: () => void
-  onGenerated: () => void
-}) {
-  // Qty per selected item, defaulting to remaining-to-dispatch. Keyed by selKey.
-  const [qtys, setQtys] = useState<Record<string, string>>(() => {
-    const m: Record<string, string> = {}
-    for (const it of items) m[selKey(it)] = String(it.totalUnits)
-    return m
-  })
-  const [name, setName] = useState("")
-  const [generating, setGenerating] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
-    document.addEventListener("keydown", onKey)
-    return () => document.removeEventListener("keydown", onKey)
-  }, [onClose])
-
-  // Group by currency for display + subtotals — mirrors the PDF layout, since a
-  // single total across currencies (USD + CNY) would be meaningless.
-  const byCurrency = useMemo(() => {
-    const m = new Map<string, DispatchListItem[]>()
-    for (const it of items) {
-      const arr = m.get(it.currency || "") ?? []
-      arr.push(it)
-      m.set(it.currency || "", arr)
-    }
-    return m
-  }, [items])
-
-  const anyQty = items.some((it) => (Number(qtys[selKey(it)]) || 0) > 0)
-  // Total units across all lines (matches the Subtotal qty column), not the
-  // number of line items.
-  const totalQty = items.reduce((s, it) => s + (Number(qtys[selKey(it)]) || 0), 0)
-  // Currency is shown per line, so the group header only adds value when the
-  // document mixes currencies (rare). Mirrors the PDF.
-  const multiCurrency = byCurrency.size > 1
-
-  async function handleGenerate() {
-    if (!anyQty || generating) return
-    setGenerating(true)
-    setError(null)
-    // Open the tab now, inside the click gesture, so popup blockers don't kill
-    // it after the async PDF build. We point it at the blob once it's ready.
-    const win = window.open("", "_blank")
-    try {
-      const lines = items
-        .map((it) => ({
-          productName: it.productName,
-          qty: Number(qtys[selKey(it)]) || 0,
-          valas: it.valas,
-          currency: it.currency,
-        }))
-        .filter((l) => l.qty > 0)
-      const trimmedName = name.trim()
-      const blob = await generateCargoDocument({ name: trimmedName || undefined, date: jakartaToday(), lines })
-      const url = URL.createObjectURL(blob)
-      if (win) win.location.href = url
-      else window.open(url, "_blank") // fallback if the pre-open was blocked
-      // Revoke later so the new tab has time to load the blob.
-      setTimeout(() => URL.revokeObjectURL(url), 60000)
-      onGenerated()
-    } catch (err) {
-      win?.close()
-      setError(err instanceof Error ? err.message : "Failed to generate document")
-      setGenerating(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6" onClick={onClose}>
-      <div
-        className="bg-white rounded-xl shadow-xl border border-cream-border w-full max-w-lg flex flex-col max-h-[90vh]"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-      >
-        <div className="px-5 py-4 border-b border-cream-border shrink-0">
-          <h3 className="text-sm font-semibold text-foreground">
-            Create cargo document for {totalQty} item{totalQty === 1 ? "" : "s"}
-          </h3>
-          <p className="text-xs text-gray-500 mt-0.5">Adjust quantities if needed. Items are grouped by currency, with a subtotal per currency.</p>
-        </div>
-
-        <div className="px-5 py-4 overflow-y-auto min-h-0 flex flex-col gap-4">
-          {[...byCurrency.entries()].map(([currency, curItems]) => {
-            const subtotal = curItems.reduce(
-              (s, it) => s + (Number(qtys[selKey(it)]) || 0) * it.valas,
-              0,
-            )
-            const totalQty = curItems.reduce((s, it) => s + (Number(qtys[selKey(it)]) || 0), 0)
-            return (
-              <div key={currency || "—"} className="flex flex-col gap-2">
-                {multiCurrency && <div className="text-xs font-semibold text-brand">{currency || "—"}</div>}
-                {curItems.map((it) => {
-                  const k = selKey(it)
-                  const qty = Number(qtys[k]) || 0
-                  return (
-                    <div key={k} className="flex items-center gap-3">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm text-foreground break-words">{it.productName}</div>
-                        <div className="text-[11px] text-gray-400">
-                          {fmtValas(it.valas)} {currency} / unit{it.store ? ` · ${it.store}` : ""}
-                        </div>
-                      </div>
-                      <input
-                        type="number"
-                        min="1"
-                        value={qtys[k] ?? ""}
-                        onChange={(e) => setQtys((p) => ({ ...p, [k]: e.target.value }))}
-                        className="w-20 shrink-0 border border-cream-border rounded-lg px-2 py-1.5 text-sm text-right bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
-                      />
-                      <span className="text-xs text-gray-500 tabular-nums w-24 text-right shrink-0">
-                        {fmtValas(qty * it.valas)} {currency}
-                      </span>
-                    </div>
-                  )
-                })}
-                <div className="flex items-center gap-3 border-t border-cream-border pt-1.5 text-xs">
-                  <span className="flex-1 min-w-0 font-medium text-gray-500">Subtotal</span>
-                  <span className="w-20 text-right font-semibold text-foreground tabular-nums shrink-0">{totalQty}</span>
-                  <span className="w-24 text-right font-semibold text-foreground tabular-nums shrink-0">{fmtValas(subtotal)} {currency}</span>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-
-        <div className="px-5 py-4 border-t border-cream-border shrink-0 flex flex-col gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-gray-500">Document name <span className="text-gray-400 font-normal">(optional)</span></span>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Cargo to Jakarta — Batch 3"
-              className="border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
-            />
-          </label>
-          {error && <p className="text-xs text-red-600">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={generating}
-              className="px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={handleGenerate}
-              disabled={generating || !anyQty}
-              className="px-4 py-1.5 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors"
-            >
-              {generating ? "Preparing…" : "Open PDF"}
-            </button>
-          </div>
         </div>
       </div>
     </div>

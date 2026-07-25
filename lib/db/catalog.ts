@@ -143,11 +143,14 @@ export async function getProductsPaginated(opts: {
   store?: string
   type?: string
   country?: string
+  // "filled" = has a non-zero value; "blank" = null or 0. Undefined = no filter.
+  valas?: "filled" | "blank"
+  gram?: "filled" | "blank"
   sortKey?: string
   sortDir?: "asc" | "desc"
   skipCount?: boolean
 }): Promise<PaginatedProducts> {
-  const { page, pageSize, search, name, store, type, country, skipCount } = opts
+  const { page, pageSize, search, name, store, type, country, valas, gram, skipCount } = opts
   const offset = (page - 1) * pageSize
 
   const conditions: string[] = ["p.name != ''"]
@@ -176,6 +179,11 @@ export async function getProductsPaginated(opts: {
     if (t.includes("over") || t.includes("abroad")) conditions.push("p.country_id IS NOT NULL")
     else if (t.includes("dom")) conditions.push("p.country_id IS NULL")
   }
+  // valas / gram default to 0 (never null in practice), so "blank" = 0.
+  if (valas === "filled") conditions.push("COALESCE(p.valas, 0) <> 0")
+  else if (valas === "blank") conditions.push("COALESCE(p.valas, 0) = 0")
+  if (gram === "filled") conditions.push("COALESCE(p.gram, 0) <> 0")
+  else if (gram === "blank") conditions.push("COALESCE(p.gram, 0) = 0")
 
   const where = `WHERE ${conditions.join(" AND ")}`
 

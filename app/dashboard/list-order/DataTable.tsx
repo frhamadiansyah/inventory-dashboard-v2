@@ -824,7 +824,7 @@ function EditOrderModal({ row, options, isOwner, onClose, onSaved, onDelete }: {
   const [confirmPriceOpen, setConfirmPriceOpen] = useState(false)
 
   const customerOptions = useMemo(
-    () => (options?.customers ?? []).map((c) => ({ value: c, label: displayIg(c) })),
+    () => (options?.customers ?? []).map((c) => ({ value: c, label: displayIg(c), meta: options?.customerMobiles?.[c] || undefined })),
     [options],
   )
   const itemOptions = useMemo(
@@ -926,6 +926,7 @@ function EditOrderModal({ row, options, isOwner, onClose, onSaved, onDelete }: {
               options={customerOptions}
               placeholder="Search or type new customer..."
               allowNewValue
+              searchMeta
             />
           </div>
           <div>
@@ -1174,7 +1175,7 @@ function AddOrderForm({ options, onOrderAdded, onCancel }: {
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null)
 
   const customerOptions = useMemo(
-    () => (options?.customers ?? []).map((c) => ({ value: c, label: displayIg(c) })),
+    () => (options?.customers ?? []).map((c) => ({ value: c, label: displayIg(c), meta: options?.customerMobiles?.[c] || undefined })),
     [options],
   )
   const itemOptions = useMemo(
@@ -1246,6 +1247,7 @@ function AddOrderForm({ options, onOrderAdded, onCancel }: {
             options={customerOptions}
             placeholder="Search or type new customer..."
             allowNewValue
+            searchMeta
           />
         </div>
       </div>
