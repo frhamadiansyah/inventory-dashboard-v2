@@ -23,6 +23,8 @@ interface Props {
   alwaysShowAll?: boolean
   /** Click-only mode: no typing/filtering, just open the list and pick. */
   searchable?: boolean
+  /** Also match the query against each option's `meta` (e.g. a phone number). */
+  searchMeta?: boolean
   /** Shorter trigger input (34px) instead of the default 38px */
   dense?: boolean
 }
@@ -37,6 +39,7 @@ export default function SearchableSelect({
   allowNewValue = false,
   alwaysShowAll = false,
   searchable = true,
+  searchMeta = false,
   dense = false,
 }: Props) {
   const selectedLabel = useMemo(
@@ -85,10 +88,13 @@ export default function SearchableSelect({
   const filtered = useMemo(() => {
     // Click-only mode never filters — always show the full list.
     if (!searchable) return options
-    if (debouncedQuery) return options.filter((o) => o.label.toLowerCase().includes(debouncedQuery))
+    if (debouncedQuery) return options.filter((o) =>
+      o.label.toLowerCase().includes(debouncedQuery) ||
+      (searchMeta && (o.meta ?? "").toLowerCase().includes(debouncedQuery)),
+    )
     if (LARGE_LIST && !alwaysShowAll) return []
     return options
-  }, [debouncedQuery, options, LARGE_LIST, alwaysShowAll, searchable])
+  }, [debouncedQuery, options, LARGE_LIST, alwaysShowAll, searchable, searchMeta])
 
   useEffect(() => { setHighlightIdx((i) => (i === -1 ? i : -1)) }, [filtered])
 

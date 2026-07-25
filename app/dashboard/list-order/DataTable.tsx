@@ -926,6 +926,7 @@ function EditOrderModal({ row, options, isOwner, onClose, onSaved, onDelete }: {
               options={customerOptions}
               placeholder="Search or type new customer..."
               allowNewValue
+              searchMeta
             />
           </div>
           <div>
@@ -1246,6 +1247,7 @@ function AddOrderForm({ options, onOrderAdded, onCancel }: {
             options={customerOptions}
             placeholder="Search or type new customer..."
             allowNewValue
+            searchMeta
           />
         </div>
       </div>
