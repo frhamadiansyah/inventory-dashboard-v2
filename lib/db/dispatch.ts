@@ -174,3 +174,53 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
 
   return items
 }
+
+// ─── Dispatch Document ──────────────────────────────────────────────────────
+
+export interface DispatchDocLine {
+  productName: string
+  qty: number
+  valas: number
+  currency: string
+}
+
+/**
+ * Per-product tally of *dispatched* units for one event, for the cargo-style
+ * dispatch document. `receipt` is an optional case-insensitive SUBSTRING match
+ * on dispatch_receipt (e.g. "MNC" matches "MNC38179"); empty/absent = every
+ * dispatched line for the event. qty = SUM(unit_dispatch). valas/currency come
+ * from the product and its country (same join as getDispatchList), so the
+ * cargo template can price and group the lines by currency.
+ */
+export async function getDispatchDocument(
+  event: string,
+  receipt?: string | null,
+): Promise<DispatchDocLine[]> {
+  const receiptFilter =
+    receipt && receipt.trim()
+      ? sql`AND o.dispatch_receipt ILIKE '%' || ${receipt.trim()} || '%'`
+      : sql``
+  const rows = await sql`
+    SELECT
+      p.name  AS product_name,
+      p.valas,
+      COALESCE(c.currency, '') AS currency,
+      SUM(o.unit_dispatch)::int AS qty
+    FROM orders o
+    JOIN products p ON p.id = o.product_id
+    LEFT JOIN countries c ON c.id = p.country_id
+    WHERE o.event = ${event}
+      AND o.unit_dispatch IS NOT NULL
+      AND o.unit_dispatch > 0
+      ${receiptFilter}
+    GROUP BY p.id, c.currency
+    HAVING SUM(o.unit_dispatch) > 0
+    ORDER BY p.store NULLS LAST, p.name
+  `
+  return rows.map((r) => ({
+    productName: r.product_name as string,
+    qty: r.qty as number,
+    valas: Number(r.valas) || 0,
+    currency: (r.currency as string) ?? "",
+  }))
+}
