@@ -259,6 +259,7 @@ export default function DispatchListClient() {
   // Multi-select for marking several items dispatched under one shared tracking ref.
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [cancelOpen, setCancelOpen] = useState(false)
 
   const fetchItems = useCallback((event?: string, silent = false) => {
     if (!silent) setLoading(true)
@@ -649,6 +650,17 @@ export default function DispatchListClient() {
                 </svg>
               ),
             },
+            {
+              label: "Cancelled",
+              color: "red",
+              onClick: () => setCancelOpen(true),
+              icon: (
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M15 9l-6 6M9 9l6 6" />
+                </svg>
+              ),
+            },
           ]}
         />
       )}
@@ -669,6 +681,14 @@ export default function DispatchListClient() {
             })
             handleDispatchedSuccess()
           }}
+        />
+      )}
+
+      {cancelOpen && (
+        <ConfirmCancelPanel
+          items={selectedItems}
+          onClose={() => setCancelOpen(false)}
+          onSuccess={() => { clearSelection(); setCancelOpen(false); handleDispatchedSuccess() }}
         />
       )}
 
@@ -840,6 +860,121 @@ function ConfirmDispatchPanel({
               className="px-4 py-1.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
             >
               {submitting ? "Saving…" : "Mark dispatched"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Confirm multi-cancel panel ─────────────────────────────────────────────
+
+function ConfirmCancelPanel({
+  items,
+  onClose,
+  onSuccess,
+}: {
+  items: DispatchListItem[]
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onClose])
+
+  const byEvent = useMemo(() => {
+    const m = new Map<string, DispatchListItem[]>()
+    for (const it of items) {
+      const arr = m.get(it.event) ?? []
+      arr.push(it)
+      m.set(it.event, arr)
+    }
+    return m
+  }, [items])
+
+  // Cancel zeroes the whole order line, so every open order for these items is
+  // affected (not just the un-dispatched remainder).
+  const orderIds = useMemo(() => items.flatMap((it) => it.orderIds), [items])
+
+  async function handleSubmit() {
+    if (orderIds.length === 0 || submitting) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await fetch("/api/sheets/dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "cancel", orderIds }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "Failed to cancel")
+      onSuccess()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to cancel")
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl border border-cream-border w-full max-w-lg flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="px-5 py-4 border-b border-cream-border shrink-0">
+          <h3 className="text-sm font-semibold text-foreground">
+            Cancel {items.length} item{items.length === 1 ? "" : "s"}?
+          </h3>
+          <p className="text-xs text-red-600 mt-0.5">
+            Zeroes the affected customer orders (units &amp; bought qty → 0) and refunds anyone who paid. Nothing is added to Inventory. This can&rsquo;t be undone.
+          </p>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto min-h-0 flex flex-col gap-4">
+          {[...byEvent.entries()].map(([event, evItems]) => (
+            <div key={event} className="flex flex-col gap-2">
+              <div className="text-xs font-semibold text-gray-500">{event}</div>
+              {evItems.map((it) => (
+                <div key={selKey(it)} className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-foreground break-words">{it.productName}</div>
+                    {it.store && <div className="text-[11px] text-gray-400">{it.store}</div>}
+                  </div>
+                  <span className="text-[11px] text-gray-400 shrink-0">
+                    {it.customerCount} customer{it.customerCount === 1 ? "" : "s"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div className="px-5 py-4 border-t border-cream-border shrink-0 flex flex-col gap-3">
+          {error && <p className="text-xs text-red-600">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors"
+            >
+              Keep
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={submitting || orderIds.length === 0}
+              className="px-4 py-1.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 transition-colors"
+            >
+              {submitting ? "Cancelling…" : "Cancel orders"}
             </button>
           </div>
         </div>
