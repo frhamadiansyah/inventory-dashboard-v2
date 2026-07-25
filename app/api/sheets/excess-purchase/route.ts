@@ -6,6 +6,7 @@ import {
   getDuplicateFormRowsForItems,
   bulkUpdatePurchase,
   bulkUpdateArrive,
+  bulkUpdateDispatch,
   deleteExcessRow,
   updateExcessRowUnitBuy,
   appendExcessPurchase,
@@ -28,7 +29,7 @@ export async function POST(req: NextRequest) {
 
     // Broken inventory is tracked but never sellable, so exclude it from the
     // apply-to-orders working set entirely (not matched, not deleted/updated).
-    const excessRows = (await getExcessPurchaseRows()).filter((r) => r.reason !== "broken")
+    const excessRows = (await getExcessPurchaseRows()).filter((r) => r.reason !== "broken" && r.reason !== "missing")
 
     if (excessRows.length === 0) {
       return NextResponse.json({ results: [] })
@@ -48,6 +49,17 @@ export async function POST(req: NextRequest) {
     // (applied excess is already in hand, so it counts as arrived).
     const origUnitArrive = new Map<number, number>()
     for (const r of formRows) origUnitArrive.set(r.rowNumber, r.unitArrive ?? 0)
+
+    // Each order's original unit_dispatch, to bump alongside unit_buy on apply
+    // (applied excess is already in hand, so it counts as dispatched too).
+    const origUnitDispatch = new Map<number, number>()
+    for (const r of formRows) origUnitDispatch.set(r.rowNumber, r.unitDispatch ?? 0)
+
+    // Each order's existing dispatch_receipt, preserved on apply — bulkUpdateDispatch
+    // always writes the column, so without this a partially-dispatched order's
+    // tracking ref would be silently clobbered with "".
+    const origDispatchReceipt = new Map<number, string>()
+    for (const r of formRows) origDispatchReceipt.set(r.rowNumber, r.dispatchReceipt ?? "")
 
     // Accumulate Duplicate_Form updates (keyed by rowNumber to merge multi-excess fills)
     const formUpdates = new Map<number, { customer: string; oldUnitBuy: number; unitBuy: number; receipt: string }>()
@@ -107,9 +119,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 1. Write all Duplicate_Form updates in one batch. unit_arrive is bumped by
-    //    the same amount applied (unitBuy - oldUnitBuy) so applied excess also
-    //    drops off the receiving list, not just the shopping list.
+    // 1. Write all Duplicate_Form updates in one batch. unit_arrive and
+    //    unit_dispatch are both bumped by the same amount applied
+    //    (unitBuy - oldUnitBuy) so applied excess — stock already in hand —
+    //    drops off the dispatch and receiving lists too, not just the
+    //    shopping list.
     await withActor(session.user.email, async (tx) => {
       const entries = Array.from(formUpdates.entries())
       await bulkUpdatePurchase(
@@ -124,6 +138,14 @@ export async function POST(req: NextRequest) {
         entries.map(([rowNumber, d]) => ({
           rowNumber,
           unitArrive: (origUnitArrive.get(rowNumber) ?? 0) + (d.unitBuy - d.oldUnitBuy),
+        })),
+        tx,
+      )
+      await bulkUpdateDispatch(
+        entries.map(([rowNumber, d]) => ({
+          rowNumber,
+          unitDispatch: (origUnitDispatch.get(rowNumber) ?? 0) + (d.unitBuy - d.oldUnitBuy),
+          dispatchReceipt: origDispatchReceipt.get(rowNumber) ?? "",
         })),
         tx,
       )

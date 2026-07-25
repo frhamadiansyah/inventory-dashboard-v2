@@ -4,8 +4,9 @@ import type { ReceivedReportItem } from "@/lib/db"
 const BRAND: [number, number, number] = [0x7b, 0x1a, 0x1a]
 
 export interface ReceivedReportData {
-  from: string // YYYY-MM-DD (inclusive)
-  to: string // YYYY-MM-DD (inclusive); equals `from` for a single day
+  event: string
+  from: string | null // YYYY-MM-DD (inclusive); null = no date filter (all dates)
+  to: string | null // YYYY-MM-DD (inclusive); equals `from` for a single day
   items: ReceivedReportItem[]
   totalUnits: number
 }
@@ -36,22 +37,25 @@ const BOTTOM = PAGE_H - MARGIN
 
 // Column x-positions / widths. Units is right-aligned at the right edge.
 const COL_EVENT_X = MARGIN
-const COL_STORE_X = MARGIN + 50
-const COL_PRODUCT_X = MARGIN + 92
+const COL_RECEIPT_X = MARGIN + 36
+const COL_STORE_X = MARGIN + 78
+const COL_PRODUCT_X = MARGIN + 106
 const COL_UNITS_R = PAGE_W - MARGIN
 const PRODUCT_W = COL_UNITS_R - COL_PRODUCT_X - 14
-const EVENT_W = COL_STORE_X - COL_EVENT_X - 3
+const EVENT_W = COL_RECEIPT_X - COL_EVENT_X - 3
+const RECEIPT_W = COL_STORE_X - COL_RECEIPT_X - 3
 const STORE_W = COL_PRODUCT_X - COL_STORE_X - 3
 
 const LINE_H = 5
 
 /**
  * Build the printable "Items Received" report as a PDF Blob. Per-product totals
- * grouped by the query's order (newest event → store → product). Mirrors the
+ * in the query's order (event → dispatch receipt → store → product). Mirrors the
  * client-side jsPDF approach in lib/shipping-label.ts (hand-drawn table, no
  * autotable dependency) and returns a Blob for the standard download flow.
  */
 export async function generateReceivedReport({
+  event,
   from,
   to,
   items,
@@ -59,6 +63,9 @@ export async function generateReceivedReport({
 }: ReceivedReportData): Promise<Blob> {
   const { default: jsPDF } = await import("jspdf")
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" })
+
+  // Date subtitle: the range when given, else "All dates".
+  const dateText = from && to ? formatRange(from, to) : "All dates"
 
   let y = MARGIN
 
@@ -68,12 +75,12 @@ export async function generateReceivedReport({
     doc.setFontSize(16)
     doc.text("YUBISAYU", MARGIN, y + 4)
     doc.setFontSize(13)
-    doc.text("Items Received", MARGIN, y + 11)
+    doc.text(`Items Received · ${event}`, MARGIN, y + 11)
 
     doc.setTextColor(80)
     doc.setFont("helvetica", "normal")
     doc.setFontSize(11)
-    doc.text(formatRange(from, to), COL_UNITS_R, y + 11, { align: "right" })
+    doc.text(dateText, COL_UNITS_R, y + 11, { align: "right" })
 
     doc.setDrawColor(...BRAND)
     doc.setLineWidth(0.4)
@@ -86,6 +93,7 @@ export async function generateReceivedReport({
     doc.setFont("helvetica", "bold")
     doc.setFontSize(8.5)
     doc.text("EVENT", COL_EVENT_X, y)
+    doc.text("RECEIPT", COL_RECEIPT_X, y)
     doc.text("STORE", COL_STORE_X, y)
     doc.text("PRODUCT", COL_PRODUCT_X, y)
     doc.text("UNITS", COL_UNITS_R, y, { align: "right" })
@@ -114,8 +122,9 @@ export async function generateReceivedReport({
   for (const item of items) {
     const productLines = doc.splitTextToSize(item.productName, PRODUCT_W) as string[]
     const eventLines = doc.splitTextToSize(item.event, EVENT_W) as string[]
+    const receiptLines = doc.splitTextToSize(item.dispatchReceipt || "—", RECEIPT_W) as string[]
     const storeLines = doc.splitTextToSize(item.store || "—", STORE_W) as string[]
-    const rowH = Math.max(productLines.length, eventLines.length, storeLines.length) * LINE_H
+    const rowH = Math.max(productLines.length, eventLines.length, receiptLines.length, storeLines.length) * LINE_H
 
     // Page break before drawing a row that would overflow.
     if (y + rowH > BOTTOM) {
@@ -128,6 +137,7 @@ export async function generateReceivedReport({
     }
 
     doc.text(eventLines, COL_EVENT_X, y + 3.5)
+    doc.text(receiptLines, COL_RECEIPT_X, y + 3.5)
     doc.text(storeLines, COL_STORE_X, y + 3.5)
     doc.text(productLines, COL_PRODUCT_X, y + 3.5)
     doc.text(String(item.unitsReceived), COL_UNITS_R, y + 3.5, { align: "right" })

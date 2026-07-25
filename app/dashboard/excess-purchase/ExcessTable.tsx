@@ -22,6 +22,7 @@ const REASON_LABEL: Record<ExcessReason, string> = {
   overship: "Overship",
   wrong_product: "Wrong",
   broken: "Broken",
+  missing: "Missing",
   customer_cancelled: "Customer cancelled",
   manual: "Manual entry",
 }
@@ -31,6 +32,7 @@ const REASON_CLASS: Record<ExcessReason, string> = {
   overship: "bg-blue-50 text-blue-700 border-blue-200",
   wrong_product: "bg-yellow-50 text-yellow-700 border-yellow-200",
   broken: "bg-red-50 text-red-700 border-red-200",
+  missing: "bg-orange-50 text-orange-700 border-orange-200",
   customer_cancelled: "bg-purple-50 text-purple-700 border-purple-200",
   manual: "bg-teal-50 text-teal-700 border-teal-200",
 }
@@ -265,8 +267,8 @@ export default function ExcessTable() {
           return (
             <div className="flex items-center justify-end gap-2">
               {/* Broken stock isn't sellable — no apply action. */}
-              {r.reason === "broken" ? (
-                <span className="inline-flex p-1 text-gray-300" title="Not available — broken inventory can't be applied">
+              {r.reason === "broken" || r.reason === "missing" ? (
+                <span className="inline-flex p-1 text-gray-300" title="Not available — broken or missing inventory can't be applied">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="10" />
                     <path d="m4.9 4.9 14.2 14.2" />
@@ -351,8 +353,8 @@ export default function ExcessTable() {
         <div className="flex items-center justify-end pt-2.5 border-t border-cream-border">
           <span className="mr-auto"><ReasonBadge reason={r.reason} /></span>
           {/* Broken stock isn't sellable — no apply action. */}
-          {r.reason === "broken" ? (
-            <span className="inline-flex px-1 py-1.5 text-gray-300" title="Not available — broken inventory can't be applied">
+          {r.reason === "broken" || r.reason === "missing" ? (
+            <span className="inline-flex px-1 py-1.5 text-gray-300" title="Not available — broken or missing inventory can't be applied">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="10" />
                 <path d="m4.9 4.9 14.2 14.2" />

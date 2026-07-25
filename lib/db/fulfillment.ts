@@ -6,6 +6,7 @@ import type { DBExecutor } from "./actor"
 import type { ShipOrderLine, ShipCustomer, ShipStatus, ShipOrdersParams, ShipMergedParams, ShipMergedResult, ShippingRecord, CustomerDetail } from "./types"
 import { getPaymentStatus, type PaymentStatus } from "./finance"
 import { fetchPaidStatusMap, compareOrderPriority, type PaidStatus } from "./shopping-list"
+import { appendExcessPurchase, reduceOrderRefundOnly } from "./orders"
 
 // ─── Ship Orders ────────────────────────────────────────────────────────────
 
@@ -519,11 +520,13 @@ export interface ArrivalListItem {
 }
 
 /**
- * Items that have been bought (unit_buy IS NOT NULL) but haven't fully arrived yet
- * (unit_arrive IS NULL OR unit_arrive < unit_buy). Grouped by event + product, with
- * the per-customer order list nested for the mark-arrived modal.
+ * Items that have been dispatched (unit_dispatch IS NOT NULL) but haven't fully
+ * arrived yet (unit_arrive IS NULL OR unit_arrive < unit_dispatch) — you can only
+ * receive what was dispatched. Grouped by event + product, with the per-customer
+ * order list nested for the mark-arrived modal.
  */
 export async function getArrivalList(event?: string): Promise<ArrivalListItem[]> {
+  // Arrival gates on unit_dispatch (dispatched stock is what can be received); 'unitBuy' JSON key carries the dispatched count.
   const rows = event
     ? await sql`
         SELECT
@@ -534,26 +537,26 @@ export async function getArrivalList(event?: string): Promise<ArrivalListItem[]>
           p.valas,
           p.kurs,
           COALESCE(c.currency, '') AS currency,
-          SUM(o.unit_buy - COALESCE(o.unit_arrive, 0))::int AS total_pending,
-          SUM(o.unit_buy)::int AS total_bought,
+          SUM(o.unit_dispatch - COALESCE(o.unit_arrive, 0))::int AS total_pending,
+          SUM(o.unit_dispatch)::int AS total_bought,
           COUNT(DISTINCT o.customer)::int AS customer_count,
           ARRAY_AGG(DISTINCT o.customer ORDER BY o.customer) AS customers,
           ARRAY_AGG(o.id ORDER BY o.id) AS order_ids,
           JSON_AGG(JSON_BUILD_OBJECT(
             'id', o.id,
             'customer', o.customer,
-            'unitBuy', o.unit_buy,
+            'unitBuy', o.unit_dispatch,
             'unitArrive', COALESCE(o.unit_arrive, 0),
-            'pending', o.unit_buy - COALESCE(o.unit_arrive, 0)
+            'pending', o.unit_dispatch - COALESCE(o.unit_arrive, 0)
           ) ORDER BY o.customer, o.id) AS orders
         FROM orders o
         JOIN products p ON p.id = o.product_id
         LEFT JOIN countries c ON c.id = p.country_id
-        WHERE o.unit_buy IS NOT NULL
-          AND (o.unit_arrive IS NULL OR o.unit_arrive < o.unit_buy)
+        WHERE o.unit_dispatch IS NOT NULL
+          AND (o.unit_arrive IS NULL OR o.unit_arrive < o.unit_dispatch)
           AND o.event = ${event}
         GROUP BY o.event, o.product_id, p.name, p.store, p.valas, p.kurs, c.currency
-        HAVING SUM(o.unit_buy - COALESCE(o.unit_arrive, 0)) > 0
+        HAVING SUM(o.unit_dispatch - COALESCE(o.unit_arrive, 0)) > 0
         ORDER BY p.name, p.store
       `
     : await sql`
@@ -565,26 +568,26 @@ export async function getArrivalList(event?: string): Promise<ArrivalListItem[]>
           p.valas,
           p.kurs,
           COALESCE(c.currency, '') AS currency,
-          SUM(o.unit_buy - COALESCE(o.unit_arrive, 0))::int AS total_pending,
-          SUM(o.unit_buy)::int AS total_bought,
+          SUM(o.unit_dispatch - COALESCE(o.unit_arrive, 0))::int AS total_pending,
+          SUM(o.unit_dispatch)::int AS total_bought,
           COUNT(DISTINCT o.customer)::int AS customer_count,
           ARRAY_AGG(DISTINCT o.customer ORDER BY o.customer) AS customers,
           ARRAY_AGG(o.id ORDER BY o.id) AS order_ids,
           JSON_AGG(JSON_BUILD_OBJECT(
             'id', o.id,
             'customer', o.customer,
-            'unitBuy', o.unit_buy,
+            'unitBuy', o.unit_dispatch,
             'unitArrive', COALESCE(o.unit_arrive, 0),
-            'pending', o.unit_buy - COALESCE(o.unit_arrive, 0)
+            'pending', o.unit_dispatch - COALESCE(o.unit_arrive, 0)
           ) ORDER BY o.customer, o.id) AS orders
         FROM orders o
         JOIN products p ON p.id = o.product_id
         LEFT JOIN countries c ON c.id = p.country_id
         JOIN events e ON e.name = o.event
-        WHERE o.unit_buy IS NOT NULL
-          AND (o.unit_arrive IS NULL OR o.unit_arrive < o.unit_buy)
+        WHERE o.unit_dispatch IS NOT NULL
+          AND (o.unit_arrive IS NULL OR o.unit_arrive < o.unit_dispatch)
         GROUP BY o.event, o.product_id, p.name, p.store, p.valas, p.kurs, c.currency
-        HAVING SUM(o.unit_buy - COALESCE(o.unit_arrive, 0)) > 0
+        HAVING SUM(o.unit_dispatch - COALESCE(o.unit_arrive, 0)) > 0
         -- Most recently created event first (matches the shopping list and
         -- dashboard); product name then store within each event. MAX() because
         -- created_at is constant per event but not in the GROUP BY.
@@ -626,6 +629,7 @@ export async function getArrivalList(event?: string): Promise<ArrivalListItem[]>
 
 export interface ReceivedReportItem {
   event: string
+  dispatchReceipt: string
   store: string
   productId: number
   productName: string
@@ -633,17 +637,18 @@ export interface ReceivedReportItem {
 }
 
 /**
- * Per-product tally of units *received* over a local (Asia/Jakarta) date range,
- * inclusive on both ends, for the printable receiving report. Pass the same
- * value for `from` and `to` for a single day.
+ * Per-product tally of units *received* for one event, optionally narrowed to a
+ * local (Asia/Jakarta) date range (inclusive on both ends). `event` is required;
+ * pass `from`/`to` as null (or omit) to include every date for that event. Pass
+ * the same value for `from` and `to` for a single day.
  *
  * Receiving is incremental — `unit_arrive` accumulates in batches and only
  * bumps `updated_at`, which any edit also touches — so `orders` itself can't
  * say what arrived on a date. Instead we read the append-only `audit.audit_log`
  * (migration 029): each orders write stores old/new JSONB, so the per-row delta
  * `new.unit_arrive − old.unit_arrive` is exactly the units booked in that
- * transaction. Summing the positive deltas over the range gives the receipts;
- * a product received across several days in the range is one summed row.
+ * transaction. Summing the positive deltas gives the receipts; a product
+ * received across several days is one summed row.
  *
  * Only increases count (gross receipts): a downward correction that fixes an
  * over-count is intentionally excluded — this is a "what came in" log, not a
@@ -651,29 +656,42 @@ export interface ReceivedReportItem {
  * audit timestamp converted to Asia/Jakarta, so day boundaries match the wall
  * clock rather than UTC.
  */
-export async function getReceivedReport(from: string, to: string): Promise<ReceivedReportItem[]> {
+export async function getReceivedReport(
+  event: string,
+  from?: string | null,
+  to?: string | null,
+): Promise<ReceivedReportItem[]> {
+  // Apply the date window only when a range was given; otherwise every receipt
+  // for the event is included regardless of date.
+  const dateFilter =
+    from && to
+      ? sql`AND (a.at AT TIME ZONE 'Asia/Jakarta')::date BETWEEN ${from}::date AND ${to}::date`
+      : sql``
   const rows = await sql`
     SELECT
       (a.new_row->>'event')                                        AS event,
       (a.new_row->>'product_id')::int                              AS product_id,
       p.name                                                       AS product_name,
       p.store                                                      AS store,
+      STRING_AGG(DISTINCT NULLIF(a.new_row->>'dispatch_receipt', ''), ', '
+                 ORDER BY NULLIF(a.new_row->>'dispatch_receipt', '')) AS dispatch_receipt,
       SUM( (a.new_row->>'unit_arrive')::int
            - COALESCE((a.old_row->>'unit_arrive')::int, 0) )::int  AS units_received
     FROM audit.audit_log a
     JOIN products p ON p.id = (a.new_row->>'product_id')::int
-    LEFT JOIN events e ON e.name = (a.new_row->>'event')
     WHERE a.table_name = 'orders'
       AND a.action IN ('INSERT', 'UPDATE')
-      AND (a.at AT TIME ZONE 'Asia/Jakarta')::date BETWEEN ${from}::date AND ${to}::date
+      AND (a.new_row->>'event') = ${event}
+      ${dateFilter}
       AND COALESCE((a.new_row->>'unit_arrive')::int, 0)
           > COALESCE((a.old_row->>'unit_arrive')::int, 0)
-    GROUP BY event, product_id, p.name, p.store, e.created_at
-    ORDER BY e.created_at DESC NULLS LAST, event, p.store, p.name
+    GROUP BY event, product_id, p.name, p.store
+    ORDER BY event, dispatch_receipt NULLS FIRST, p.store, p.name
   `
 
   return rows.map((r) => ({
     event: r.event as string,
+    dispatchReceipt: (r.dispatch_receipt as string) ?? "",
     store: (r.store as string) ?? "",
     productId: r.product_id as number,
     productName: r.product_name as string,
@@ -683,27 +701,28 @@ export async function getReceivedReport(from: string, to: string): Promise<Recei
 
 /**
  * Partial allocation: shipments arrive in batches, so an order can have
- * unit_arrive < unit_buy and still appear in the arrival list with reduced
- * pending qty.
+ * unit_arrive < unit_dispatch and still appear in the arrival list with
+ * reduced pending qty. Gates/caps on unit_dispatch (not unit_buy) — only
+ * dispatched stock is eligible to be marked arrived.
  */
 export async function markProductArrived(data: {
   event: string
   productId: number
   quantityArrived: number
 }, actor?: string | null): Promise<{ filledOrderIds: number[]; unassignedUnits: number }> {
-  type Row = { id: number; customer: string; unitBuy: number; unitArrive: number; pending: number }
+  type Row = { id: number; customer: string; unitDispatch: number; unitArrive: number; pending: number }
   const orders = (await sql`
     SELECT
       id,
       customer,
-      unit_buy::int AS "unitBuy",
+      unit_dispatch::int AS "unitDispatch",
       COALESCE(unit_arrive, 0)::int AS "unitArrive",
-      (unit_buy - COALESCE(unit_arrive, 0))::int AS pending
+      (unit_dispatch - COALESCE(unit_arrive, 0))::int AS pending
     FROM orders
     WHERE event = ${data.event}
       AND product_id = ${data.productId}
-      AND unit_buy IS NOT NULL
-      AND (unit_arrive IS NULL OR unit_arrive < unit_buy)
+      AND unit_dispatch IS NOT NULL
+      AND (unit_arrive IS NULL OR unit_arrive < unit_dispatch)
     ORDER BY id ASC
   `) as unknown as Row[]
 
@@ -720,7 +739,7 @@ export async function markProductArrived(data: {
       await tx`SELECT set_config('app.actor', ${actor ?? ""}, true)`
       for (const { item: o, allocated } of allocations) {
         const newUnitArrive = o.unitArrive + allocated
-        if (newUnitArrive >= o.unitBuy) filledOrderIds.push(o.id)
+        if (newUnitArrive >= o.unitDispatch) filledOrderIds.push(o.id)
         await tx`
           UPDATE orders
           SET unit_arrive = ${newUnitArrive}, updated_at = NOW()
@@ -731,5 +750,97 @@ export async function markProductArrived(data: {
   }
 
   return { filledOrderIds, unassignedUnits }
+}
+
+export interface NotReceivedResult {
+  cancelledUnits: number
+  excessUnits: number
+}
+
+/**
+ * Bulk "Not Received": record a delivery problem against `qty` units of one
+ * event+product. Allocates those units across the waiting orders by cancelling
+ * unpaid orders first (paid customers protected) — the reverse of
+ * markProductArrived, which fills paid customers first — with partial-order
+ * cancellation; leftover (pending − qty) units stay pending. Refunds
+ * auto-materialize as invoices drop. Inventory logging depends on mode:
+ *   - broken / missing → log qty units flagged that reason (unassignable)
+ *   - cancelled        → log the reclaimed in-hand units as customer_cancelled (assignable)
+ *   - wrong            → log qty units of the received SKU as wrong_product (assignable)
+ * Manages its own transaction + actor, mirroring markProductArrived.
+ */
+export async function recordNotReceived(
+  data: {
+    event: string
+    productId: number
+    productName: string
+    qty: number
+    mode: "wrong" | "broken" | "missing" | "cancelled"
+    receivedItem?: string
+  },
+  actor?: string | null,
+): Promise<NotReceivedResult> {
+  if (!(data.qty >= 1)) throw new Error("qty must be at least 1")
+  if (data.mode === "wrong") {
+    if (!data.receivedItem?.trim()) throw new Error("receivedItem is required for a wrong delivery")
+    if (data.receivedItem === data.productName) throw new Error("Received item must differ from the expected item")
+  }
+
+  type Row = { id: number; customer: string; unitBuy: number; unitShip: number; pending: number }
+  const orders = (await sql`
+    SELECT id, customer,
+           COALESCE(unit_buy, 0)::int  AS "unitBuy",
+           COALESCE(unit_ship, 0)::int AS "unitShip",
+           -- Cap at the ordered unit count: a manual over-dispatch (unit_dispatch > unit)
+           -- must never let us cancel/refund more units than the customer ordered.
+           LEAST(unit_dispatch - COALESCE(unit_arrive, 0), unit)::int AS pending
+    FROM orders
+    WHERE event = ${data.event}
+      AND product_id = ${data.productId}
+      AND unit_dispatch IS NOT NULL
+      AND (unit_arrive IS NULL OR unit_arrive < unit_dispatch)
+    ORDER BY id ASC
+  `) as unknown as Row[]
+
+  const statusMap = await fetchPaidStatusMap([data.event])
+  // Cancel LOWEST-priority (unpaid) orders first on a shortage, protecting
+  // paid customers — mirrors shopping-list's out-of-stock reduction (the
+  // reverse of markProductArrived, which fills paid customers first).
+  orders.sort(compareOrderPriority(data.event, statusMap)).reverse()
+
+  const { allocations, excess } = allocateFifo(orders, (o) => o.pending, data.qty)
+  if (excess > 0) throw new Error(`Only ${data.qty - excess} units are pending; cannot record ${data.qty}`)
+
+  let cancelledUnits = 0
+  let inHandUnits = 0
+  await sql.begin(async (tx) => {
+    await tx`SELECT set_config('app.actor', ${actor ?? ""}, true)`
+    for (const { item: o, allocated } of allocations) {
+      cancelledUnits += allocated
+      inHandUnits += Math.min(allocated, Math.max(0, o.unitBuy - o.unitShip))
+      await reduceOrderRefundOnly({ orderId: o.id, qty: allocated }, tx)
+    }
+    if (data.mode === "broken" || data.mode === "missing") {
+      await appendExcessPurchase(
+        [{ event: data.event, items: data.productName, unitBuy: data.qty, receipt: "", reason: data.mode }],
+        tx,
+      )
+    } else if (data.mode === "cancelled") {
+      if (inHandUnits > 0) {
+        await appendExcessPurchase(
+          [{ event: data.event, items: data.productName, unitBuy: inHandUnits, receipt: "", reason: "customer_cancelled" }],
+          tx,
+        )
+      }
+    } else {
+      await appendExcessPurchase(
+        [{ event: data.event, items: data.receivedItem!, unitBuy: data.qty, receipt: "", reason: "wrong_product", expectedItem: data.productName }],
+        tx,
+      )
+    }
+  })
+
+  const excessUnits = data.mode === "cancelled" ? inHandUnits : data.qty
+  return { cancelledUnits, excessUnits }
 }
 

@@ -7,7 +7,7 @@ export type SelectionAction = {
   icon: ReactNode
   onClick: () => void
   /** Tailwind color word driving the icon circle + label tint, e.g. "green", "blue", "brand". */
-  color: "brand" | "green" | "blue" | "red"
+  color: "brand" | "green" | "blue" | "red" | "amber"
   disabled?: boolean
 }
 
@@ -16,6 +16,7 @@ const COLOR_CLASSES: Record<SelectionAction["color"], { bg: string; text: string
   green: { bg: "bg-green-100", text: "text-green-700" },
   blue: { bg: "bg-blue-100", text: "text-blue-700" },
   red: { bg: "bg-red-100", text: "text-red-600" },
+  amber: { bg: "bg-amber-100", text: "text-amber-700" },
 }
 
 // Floating bottom bar shown while rows are multi-selected. Count + Clear on the

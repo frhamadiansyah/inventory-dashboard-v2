@@ -1,7 +1,7 @@
 import sql from "../db-pool"
 import { tsToString, normalizeCustomer } from "./helpers"
 import type { DBExecutor } from "./actor"
-import type { SheetOptions, ItemOption, OrderRow, FormRow, ExcessRow, ExcessReason, PurchaseUpdate, ArriveUpdate } from "./types"
+import type { SheetOptions, ItemOption, OrderRow, FormRow, ExcessRow, ExcessReason, PurchaseUpdate, ArriveUpdate, DispatchUpdate } from "./types"
 
 // ─── Options ────────────────────────────────────────────────────────────────
 
@@ -52,7 +52,7 @@ export async function getDuplicateFormRows(limit?: number): Promise<FormRow[]> {
         SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
                p.name AS product_name, o.unit, o.note,
                o.created_at, o.updated_at, o.unit_buy, o.receipt,
-               o.unit_arrive, o.unit_ship, o.unit_hold,
+               o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
                c.data_diri AS customer_data_diri
         FROM orders o
         JOIN products p ON p.id = o.product_id
@@ -66,7 +66,7 @@ export async function getDuplicateFormRows(limit?: number): Promise<FormRow[]> {
       SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
              p.name AS product_name, o.unit, o.note,
              o.created_at, o.updated_at, o.unit_buy, o.receipt,
-             o.unit_arrive, o.unit_ship, o.unit_hold,
+             o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
              c.data_diri AS customer_data_diri
       FROM orders o
       JOIN products p ON p.id = o.product_id
@@ -92,7 +92,7 @@ export async function getDuplicateFormRowsForEvent(event: string): Promise<FormR
     SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
            p.name AS product_name, o.unit, o.note,
            o.created_at, o.updated_at, o.unit_buy, o.receipt,
-           o.unit_arrive, o.unit_ship, o.unit_hold,
+           o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
            c.data_diri AS customer_data_diri
     FROM orders o
     JOIN products p ON p.id = o.product_id
@@ -117,7 +117,7 @@ export async function getDuplicateFormRowsForEvents(events: string[]): Promise<F
     SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
            p.name AS product_name, o.unit, o.note,
            o.created_at, o.updated_at, o.unit_buy, o.receipt,
-           o.unit_arrive, o.unit_ship, o.unit_hold,
+           o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
            c.data_diri AS customer_data_diri
     FROM orders o
     JOIN products p ON p.id = o.product_id
@@ -143,7 +143,7 @@ export async function getDuplicateFormRowsForItems(items: string[]): Promise<For
     SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
            p.name AS product_name, o.unit, o.note,
            o.created_at, o.updated_at, o.unit_buy, o.receipt,
-           o.unit_arrive, o.unit_ship, o.unit_hold,
+           o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
            c.data_diri AS customer_data_diri
     FROM orders o
     JOIN products p ON p.id = o.product_id
@@ -241,6 +241,7 @@ export async function getDuplicateFormRowsPaginated(opts: {
     unit: "o.unit", unitPrice: "o.unit_price", note: "o.note", createdAt: "o.created_at",
     unitBuy: "o.unit_buy", receipt: "o.receipt",
     unitArrive: "o.unit_arrive", unitShip: "o.unit_ship", unitHold: "o.unit_hold",
+    unitDispatch: "o.unit_dispatch",
     updatedAt: "o.updated_at",
   }
   const sortCol = (opts.sortKey && SORT_COLUMNS[opts.sortKey]) || "o.id"
@@ -253,7 +254,7 @@ export async function getDuplicateFormRowsPaginated(opts: {
     `SELECT o.id, o.event, o.customer, o.product_id, o.unit_price,
             p.name AS product_name, o.unit, o.note,
             o.created_at, o.updated_at, o.unit_buy, o.receipt,
-            o.unit_arrive, o.unit_ship, o.unit_hold,
+            o.unit_arrive, o.unit_ship, o.unit_dispatch, o.dispatch_receipt, o.unit_hold,
             c.data_diri AS customer_data_diri
      FROM orders o
      JOIN products p ON p.id = o.product_id
@@ -315,6 +316,8 @@ function mapFormRow(r: Record<string, unknown>): FormRow {
     receipt: (r.receipt as string) ?? "",
     unitArrive: (r.unit_arrive as number) ?? null,
     unitShip: (r.unit_ship as number) ?? null,
+    unitDispatch: (r.unit_dispatch as number) ?? null,
+    dispatchReceipt: (r.dispatch_receipt as string) ?? "",
     unitHold: (r.unit_hold as number) ?? null,
     hasAddress: dataDiri.trim().length > 0,
   }
@@ -405,7 +408,7 @@ export async function updateFormRowStage3(
  */
 export async function updateOrderOwnerCell(
   rowNumber: number,
-  column: "unit_buy" | "unit_arrive",
+  column: "unit_buy" | "unit_arrive" | "unit_dispatch",
   value: number | null,
   db: DBExecutor = sql,
 ): Promise<void> {
@@ -413,6 +416,12 @@ export async function updateOrderOwnerCell(
     await db`
       UPDATE orders
       SET unit_buy = ${value}, updated_at = NOW()
+      WHERE id = ${rowNumber}
+    `
+  } else if (column === "unit_dispatch") {
+    await db`
+      UPDATE orders
+      SET unit_dispatch = ${value}, updated_at = NOW()
       WHERE id = ${rowNumber}
     `
   } else {
@@ -537,7 +546,8 @@ export async function returnOrderUnitsToExcess(
   if (excessUnits > 0) {
     await db`
       UPDATE orders
-      SET unit = ${newUnit}, unit_buy = ${unitBuy - excessUnits}, updated_at = NOW()
+      SET unit = ${newUnit}, unit_buy = ${unitBuy - excessUnits},
+          unit_dispatch = LEAST(COALESCE(unit_dispatch, 0), ${newUnit}), updated_at = NOW()
       WHERE id = ${rowNumber}
     `
   } else {
@@ -578,6 +588,22 @@ export async function bulkUpdateArrive(updates: ArriveUpdate[], db: DBExecutor =
       updated_at = NOW()
     FROM unnest(${ids}::int[], ${arrives}::int[])
       AS data(id, unit_arrive)
+    WHERE orders.id = data.id
+  `
+}
+
+export async function bulkUpdateDispatch(updates: DispatchUpdate[], db: DBExecutor = sql): Promise<void> {
+  if (updates.length === 0) return
+  const ids = updates.map((u) => u.rowNumber)
+  const dispatches = updates.map((u) => u.unitDispatch)
+  const receipts = updates.map((u) => u.dispatchReceipt)
+  await db`
+    UPDATE orders SET
+      unit_dispatch = data.unit_dispatch,
+      dispatch_receipt = data.dispatch_receipt,
+      updated_at = NOW()
+    FROM unnest(${ids}::int[], ${dispatches}::int[], ${receipts}::text[])
+      AS data(id, unit_dispatch, dispatch_receipt)
     WHERE orders.id = data.id
   `
 }
@@ -723,8 +749,9 @@ export async function getExcessPurchasePaginated(opts: {
 }
 
 /**
- * Zero the given order lines (unit + unit_buy → 0), keeping the rows for
- * history. Used when an order can't be fulfilled (wrong/broken delivery): each
+ * Zero the given order lines (unit + unit_buy + unit_dispatch + unit_arrive → 0),
+ * keeping the rows for history so they drop off the shopping/dispatch/arrival
+ * lists. Used when an order can't be fulfilled (wrong/broken delivery): each
  * invoice drops, so the existing overpayment materialization auto-creates a
  * refund for any customer who already paid. Returns rows affected.
  */
@@ -732,7 +759,7 @@ export async function cancelOrderLines(orderIds: number[], db: DBExecutor = sql)
   if (orderIds.length === 0) return 0
   const res = await db`
     UPDATE orders
-    SET unit = 0, unit_buy = 0, updated_at = NOW()
+    SET unit = 0, unit_buy = 0, unit_dispatch = 0, unit_arrive = 0, updated_at = NOW()
     WHERE id = ANY(${orderIds})
   `
   return res.count
@@ -911,11 +938,38 @@ export async function cancelOrderUnits(
   }
 
   await db`
-    UPDATE orders SET unit = ${remainingUnit}, unit_buy = ${remainingUnitBuy}, updated_at = NOW()
+    UPDATE orders
+    SET unit = ${remainingUnit}, unit_buy = ${remainingUnitBuy},
+        unit_dispatch = LEAST(COALESCE(unit_dispatch, 0), ${remainingUnitBuy}), updated_at = NOW()
     WHERE id = ${data.orderId}
   `
 
   return { excessUnits, remainingUnit }
+}
+
+/**
+ * Reduce an order line by `qty` units without logging anything to Inventory —
+ * the refund-only primitive behind not-received partial cancellation. Drops
+ * unit, unit_buy and unit_dispatch by qty (the cancelled units come off the
+ * dispatched-but-unarrived pool), each floored so nothing falls below what's
+ * already committed downstream (unit_buy ≥ unit_ship, unit_dispatch ≥
+ * unit_arrive). Reducing `unit` drops the invoice, so an overpaid customer's
+ * refund auto-materializes. Callers that must also return stock log Inventory
+ * themselves. Unlike cancelOrderUnits (invoice-cancel: clamps unit_dispatch to
+ * the shrunk unit_buy), this subtracts qty from unit_dispatch directly.
+ */
+export async function reduceOrderRefundOnly(
+  data: { orderId: number; qty: number },
+  db: DBExecutor = sql,
+): Promise<void> {
+  await db`
+    UPDATE orders
+    SET unit = unit - ${data.qty},
+        unit_buy = GREATEST(COALESCE(unit_ship, 0), COALESCE(unit_buy, 0) - ${data.qty}),
+        unit_dispatch = GREATEST(COALESCE(unit_arrive, 0), COALESCE(unit_dispatch, 0) - ${data.qty}),
+        updated_at = NOW()
+    WHERE id = ${data.orderId}
+  `
 }
 
 export async function appendExcessPurchase(

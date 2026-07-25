@@ -5,6 +5,7 @@ import {
   getDuplicateFormRowsForItems,
   bulkUpdatePurchase,
   bulkUpdateArrive,
+  bulkUpdateDispatch,
   deleteExcessRow,
   updateExcessRowUnitBuy,
   updateExcessRow,
@@ -12,7 +13,7 @@ import {
 } from "@/lib/db"
 import type { ExcessReason, ExcessRow, FormRow } from "@/lib/db"
 
-const EXCESS_REASONS: ExcessReason[] = ["overbuy", "overship", "wrong_product", "broken", "customer_cancelled", "manual"]
+const EXCESS_REASONS: ExcessReason[] = ["overbuy", "overship", "wrong_product", "broken", "missing", "customer_cancelled", "manual"]
 
 type Params = { params: Promise<{ row: string }> }
 type UpdatedRow = { rowNumber: number; event: string; customer: string; oldUnitBuy: number; unitBuy: number }
@@ -94,8 +95,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (!excessRow) {
       return NextResponse.json({ error: "Excess row not found" }, { status: 404 })
     }
-    if (excessRow.reason === "broken") {
-      return NextResponse.json({ error: "Broken inventory can't be applied to orders" }, { status: 400 })
+    if (excessRow.reason === "broken" || excessRow.reason === "missing") {
+      return NextResponse.json({ error: "Broken or missing inventory can't be applied to orders" }, { status: 400 })
     }
     if (requested.length === 0) {
       return NextResponse.json({ error: "Pick at least one order to apply to" }, { status: 400 })
@@ -108,7 +109,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const eligibleById = new Map((await getEligibleOrders(excessRow)).map((r) => [r.rowNumber, r]))
 
     let remaining = excessRow.unitBuy
-    const updates: (UpdatedRow & { receipt: string; unitArrive: number })[] = []
+    const updates: (UpdatedRow & { receipt: string; unitArrive: number; unitDispatch: number; dispatchReceipt: string })[] = []
 
     for (const { rowNumber: targetRow, allocate: requestedAllocate } of requested) {
       const r = eligibleById.get(targetRow)
@@ -128,9 +129,12 @@ export async function POST(req: NextRequest, { params }: Params) {
         customer: r.customer,
         oldUnitBuy: current,
         unitBuy: current + allocate,
-        // Applied excess is stock already in hand, so it counts as arrived too —
-        // bump unit_arrive by the same amount to drop it off the receiving list.
+        // Applied excess is stock already in hand, so it counts as arrived AND
+        // dispatched too — bump both by the same amount so it drops off the
+        // dispatch list and the receiving list, not just the shopping list.
         unitArrive: (r.unitArrive ?? 0) + allocate,
+        unitDispatch: (r.unitDispatch ?? 0) + allocate,
+        dispatchReceipt: r.dispatchReceipt ?? "",
         receipt: combinedReceipt,
       })
       remaining -= allocate
@@ -147,6 +151,10 @@ export async function POST(req: NextRequest, { params }: Params) {
       )
       await bulkUpdateArrive(
         updates.map(({ rowNumber: rn, unitArrive }) => ({ rowNumber: rn, unitArrive })),
+        tx,
+      )
+      await bulkUpdateDispatch(
+        updates.map(({ rowNumber: rn, unitDispatch, dispatchReceipt }) => ({ rowNumber: rn, unitDispatch, dispatchReceipt })),
         tx,
       )
     })

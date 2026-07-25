@@ -170,7 +170,7 @@ export default function DataTable({ isOwner }: { isOwner: boolean }) {
   // On failure, throws so the cell can revert its input to the previous value.
   const handleCellSave = useCallback(async (
     rowNumber: number,
-    column: "unit_buy" | "unit_arrive",
+    column: "unit_buy" | "unit_arrive" | "unit_dispatch",
     value: number | null,
   ) => {
     const res = await fetch(`/api/sheets/duplicate-form/${rowNumber}`, {
@@ -184,7 +184,9 @@ export default function DataTable({ isOwner }: { isOwner: boolean }) {
     }
     setRows((rs) => rs.map((r) =>
       r.rowNumber === rowNumber
-        ? { ...r, ...(column === "unit_buy" ? { unitBuy: value } : { unitArrive: value }) }
+        ? { ...r, ...(column === "unit_buy" ? { unitBuy: value }
+            : column === "unit_dispatch" ? { unitDispatch: value }
+            : { unitArrive: value }) }
         : r,
     ))
   }, [])
@@ -282,6 +284,31 @@ export default function DataTable({ isOwner }: { isOwner: boolean }) {
           onSave={(v) => handleCellSave(row.original.rowNumber, "unit_buy", v)}
         />
       ),
+    },
+    {
+      accessorKey: "unitDispatch",
+      header: "Dispatch",
+      enableColumnFilter: false,
+      enableSorting: true,
+      size: 90,
+      meta: { align: "right" },
+      cell: ({ row }) => (
+        <EditableNumberCell
+          value={row.original.unitDispatch}
+          canEdit={isOwner}
+          onSave={(v) => handleCellSave(row.original.rowNumber, "unit_dispatch", v)}
+        />
+      ),
+    },
+    {
+      accessorKey: "dispatchReceipt",
+      header: "Dispatch Ref",
+      enableColumnFilter: false,
+      size: 140,
+      cell: ({ getValue }) => {
+        const v = getValue<string>()
+        return <span className="whitespace-nowrap">{v || "—"}</span>
+      },
     },
     {
       accessorKey: "unitArrive",
@@ -444,7 +471,7 @@ export default function DataTable({ isOwner }: { isOwner: boolean }) {
             ) : undefined
           }
           toolbarExtra={toolbarExtra}
-          initialVisibility={{ unitPrice: false, unitBuy: false, unitArrive: false, unitShip: false, note: false, updatedAt: false }}
+          initialVisibility={{ unitPrice: false, unitBuy: false, unitArrive: false, unitShip: false, unitDispatch: false, dispatchReceipt: false, note: false, updatedAt: false }}
           enableRowSelection
           rowSelection={rowSelection}
           onRowSelectionChange={setRowSelection}
