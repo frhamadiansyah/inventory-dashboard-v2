@@ -163,7 +163,16 @@ export async function getInvoiceForCustomer(
              COALESCE(e.eta, '') AS event_eta,
              -- Ongkir for this order = the rate the customer pays from the
              -- event's warehouse (per-event routing).
-             COALESCE(cwo.ongkos_kirim, 0) AS ongkir
+             COALESCE(
+               (SELECT s.ongkir
+                  FROM shipments s
+                 WHERE s.event = o.event
+                   AND lower(replace(s.customer, '@', '')) = ${searchId}
+                   AND s.tracking_number <> ''
+                 ORDER BY s.id DESC
+                 LIMIT 1),
+               cwo.ongkos_kirim, 0
+             ) AS ongkir
       FROM orders o
       JOIN products p ON p.id = o.product_id
       LEFT JOIN events e ON e.name = o.event
@@ -326,7 +335,16 @@ export async function getPublicInvoiceForCustomer(
              -- Per-event ongkir: the rate from the event's warehouse. The
              -- invoice_reader role can read customer id + the join table but
              -- still cannot read name/whatsapp/bank columns.
-             COALESCE(cwo.ongkos_kirim, 0) AS ongkir
+             COALESCE(
+               (SELECT s.ongkir
+                  FROM shipments s
+                 WHERE s.event = o.event
+                   AND lower(replace(s.customer, '@', '')) = ${searchId}
+                   AND s.tracking_number <> ''
+                 ORDER BY s.id DESC
+                 LIMIT 1),
+               cwo.ongkos_kirim, 0
+             ) AS ongkir
       FROM orders o
       JOIN products p ON p.id = o.product_id
       LEFT JOIN events e ON e.name = o.event
