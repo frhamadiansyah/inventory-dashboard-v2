@@ -929,7 +929,7 @@ export async function recordCustomerCancellation(
  * path the Arrival List uses (which always zeroes both fields outright).
  */
 export async function cancelOrderUnits(
-  data: { orderId: number; qty: number; event: string; productName: string },
+  data: { orderId: number; qty: number; event: string; productName: string; receipt?: string },
   db: DBExecutor = sql,
 ): Promise<{ excessUnits: number; remainingUnit: number }> {
   const [order] = await db`
@@ -954,7 +954,7 @@ export async function cancelOrderUnits(
         event: data.event,
         items: data.productName,
         unitBuy: excessUnits,
-        receipt: "",
+        receipt: data.receipt ?? "",
         reason: "customer_cancelled",
       }],
       db,

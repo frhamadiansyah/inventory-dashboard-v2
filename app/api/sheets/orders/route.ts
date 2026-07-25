@@ -64,7 +64,7 @@ export async function PATCH(req: NextRequest) {
     if (body.action !== "customer_cancelled") {
       return NextResponse.json({ error: "Unknown action" }, { status: 400 })
     }
-    const { event, productName, orderId, qty } = body
+    const { event, productName, orderId, qty, receipt } = body
     if (!event || !productName || !Number.isInteger(orderId) || !Number.isInteger(qty) || qty < 1) {
       return NextResponse.json(
         { error: "event, productName, orderId and a positive integer qty are required" },
@@ -72,7 +72,7 @@ export async function PATCH(req: NextRequest) {
       )
     }
     const result = await withActor(session.user.email, (tx) =>
-      cancelOrderUnits({ event, productName, orderId, qty }, tx),
+      cancelOrderUnits({ event, productName, orderId, qty, receipt: typeof receipt === "string" ? receipt : undefined }, tx),
     )
     return NextResponse.json({ success: true, ...result })
   } catch (err) {
