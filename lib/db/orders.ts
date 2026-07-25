@@ -887,7 +887,7 @@ export async function recordMissingArrival(
  * shipped yet, so this is simply their unit_buy.
  */
 export async function recordCustomerCancellation(
-  data: { event: string; productName: string; cancelOrderIds: number[] },
+  data: { event: string; productName: string; cancelOrderIds: number[]; receipt?: string },
   db: DBExecutor = sql,
 ): Promise<{ cancelledOrders: number; excessUnits: number }> {
   if (data.cancelOrderIds.length === 0) return { cancelledOrders: 0, excessUnits: 0 }
@@ -905,7 +905,7 @@ export async function recordCustomerCancellation(
         event: data.event,
         items: data.productName,
         unitBuy: excessUnits,
-        receipt: "",
+        receipt: data.receipt ?? "",
         reason: "customer_cancelled",
       }],
       db,
