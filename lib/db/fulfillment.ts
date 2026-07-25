@@ -637,18 +637,19 @@ export interface ReceivedReportItem {
 }
 
 /**
- * Per-product tally of units *received* for one event, optionally narrowed to a
- * local (Asia/Jakarta) date range (inclusive on both ends). `event` is required;
- * pass `from`/`to` as null (or omit) to include every date for that event. Pass
- * the same value for `from` and `to` for a single day.
+ * Per-(dispatch_receipt, product) tally of units *received* for one event,
+ * optionally narrowed to a local (Asia/Jakarta) date range (inclusive on both
+ * ends). `event` is required; pass `from`/`to` as null (or omit) to include
+ * every date for that event. Pass the same value for `from` and `to` for a
+ * single day. Rows are split by the order's dispatch_receipt, so the same
+ * product received under two receipts becomes two rows.
  *
  * Receiving is incremental — `unit_arrive` accumulates in batches and only
  * bumps `updated_at`, which any edit also touches — so `orders` itself can't
  * say what arrived on a date. Instead we read the append-only `audit.audit_log`
  * (migration 029): each orders write stores old/new JSONB, so the per-row delta
  * `new.unit_arrive − old.unit_arrive` is exactly the units booked in that
- * transaction. Summing the positive deltas gives the receipts; a product
- * received across several days is one summed row.
+ * transaction. Summing the positive deltas gives the receipts.
  *
  * Only increases count (gross receipts): a downward correction that fixes an
  * over-count is intentionally excluded — this is a "what came in" log, not a
@@ -673,8 +674,7 @@ export async function getReceivedReport(
       (a.new_row->>'product_id')::int                              AS product_id,
       p.name                                                       AS product_name,
       p.store                                                      AS store,
-      STRING_AGG(DISTINCT NULLIF(a.new_row->>'dispatch_receipt', ''), ', '
-                 ORDER BY NULLIF(a.new_row->>'dispatch_receipt', '')) AS dispatch_receipt,
+      COALESCE(a.new_row->>'dispatch_receipt', '')                 AS dispatch_receipt,
       SUM( (a.new_row->>'unit_arrive')::int
            - COALESCE((a.old_row->>'unit_arrive')::int, 0) )::int  AS units_received
     FROM audit.audit_log a
@@ -685,8 +685,8 @@ export async function getReceivedReport(
       ${dateFilter}
       AND COALESCE((a.new_row->>'unit_arrive')::int, 0)
           > COALESCE((a.old_row->>'unit_arrive')::int, 0)
-    GROUP BY event, product_id, p.name, p.store
-    ORDER BY event, dispatch_receipt NULLS FIRST, p.store, p.name
+    GROUP BY event, product_id, p.name, p.store, dispatch_receipt
+    ORDER BY event, dispatch_receipt, p.name
   `
 
   return rows.map((r) => ({
