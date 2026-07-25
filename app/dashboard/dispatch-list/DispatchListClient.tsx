@@ -427,7 +427,7 @@ export default function DispatchListClient() {
               <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-44">Event</th>
               <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-36">Store</th>
               <th className="text-left px-4 py-2.5 font-medium text-gray-500">Product</th>
-              <th className="text-right px-4 py-2.5 font-medium text-gray-500 w-14">Qty</th>
+              <th className="text-right px-4 py-2.5 font-medium text-gray-500 w-20">Qty</th>
               <th className="px-4 py-2.5 w-10" />
             </tr>
           </thead>
@@ -520,7 +520,7 @@ export default function DispatchListClient() {
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-right">
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
                     <span className="tabular-nums font-bold text-foreground">{row.item.totalUnits}</span>
                     {row.item.totalUnits < row.item.totalOriginal && (
                       <span className="text-xs text-gray-400 font-normal tabular-nums" title="Partially dispatched">
