@@ -79,7 +79,8 @@ export async function updateBusinessProfile(data: BusinessProfile, db: DBExecuto
 
 export async function getProductDefaults(): Promise<ProductDefaults> {
   const [row] = await sql`
-    SELECT profit_pct, operational_fee, packing_fee, markup_pct FROM product_defaults WHERE id = 1
+    SELECT profit_pct, operational_fee, packing_fee, markup_pct, tier_kurs_round_to
+    FROM product_defaults WHERE id = 1
   `
   if (!row) return DEFAULT_PRODUCT_DEFAULTS
   return {
@@ -87,18 +88,22 @@ export async function getProductDefaults(): Promise<ProductDefaults> {
     operationalFee: Number(row.operational_fee),
     packingFee: Number(row.packing_fee),
     markupPct: Number(row.markup_pct),
+    tierKursRoundTo: Number(row.tier_kurs_round_to) || 5000,
   }
 }
 
 export async function updateProductDefaults(data: ProductDefaults, db: DBExecutor = sql): Promise<void> {
   await db`
-    INSERT INTO product_defaults (id, profit_pct, operational_fee, packing_fee, markup_pct, updated_at)
-    VALUES (1, ${data.profitPct}, ${data.operationalFee}, ${data.packingFee}, ${data.markupPct}, NOW())
+    INSERT INTO product_defaults (id, profit_pct, operational_fee, packing_fee, markup_pct,
+      tier_kurs_round_to, updated_at)
+    VALUES (1, ${data.profitPct}, ${data.operationalFee}, ${data.packingFee}, ${data.markupPct},
+      ${data.tierKursRoundTo}, NOW())
     ON CONFLICT (id) DO UPDATE SET
       profit_pct = EXCLUDED.profit_pct,
       operational_fee = EXCLUDED.operational_fee,
       packing_fee = EXCLUDED.packing_fee,
       markup_pct = EXCLUDED.markup_pct,
+      tier_kurs_round_to = EXCLUDED.tier_kurs_round_to,
       updated_at = NOW()
   `
 }

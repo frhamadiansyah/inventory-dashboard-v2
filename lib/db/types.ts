@@ -1,6 +1,7 @@
 // Shared types for the db/* modules.
 
 import type { PaymentStatus } from "./finance"
+import type { PricingMethod } from "@/lib/pricing"
 
 // ─── Types (same interfaces as the old sheets.ts) ───────────────────────────
 
@@ -387,6 +388,20 @@ export interface CountryRow {
   updatedAt: string
 }
 
+/**
+ * One Tier Kurs bracket: from `minValas` upward, charge `kurs` instead of the
+ * country's flat rate. `minValas` is INCLUSIVE and the highest matching minimum
+ * wins — the resolution itself lives in lib/kurs-tiers.ts.
+ */
+export interface KursTierRow {
+  id: number
+  countryId: number
+  minValas: number
+  kurs: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface ProductRow {
   id: number
   name: string
@@ -397,12 +412,19 @@ export interface ProductRow {
   countryName: string
   valas: number
   kurs: number
+  /** The tiered rate this row was priced with, snapshotted at save time like
+   *  `kurs`. Null unless pricingMethod is "tier_kurs". See lib/kurs-tiers.ts. */
+  tieredKurs: number | null
   cargoPerKg: number
   profitPct: number
   operationalFee: number
   packingFee: number
   cost: number
   profitFixed: number
+  /** Which formula prices this row. Replaced `country_id IS NULL` as the
+   *  discriminator in migration 050 — a Tier Kurs product has a country but must
+   *  not use the overseas formula. */
+  pricingMethod: PricingMethod
   /** False when deactivated — hidden from the List Order item picker. */
   isActive: boolean
   createdAt: string

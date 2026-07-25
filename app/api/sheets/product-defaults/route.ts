@@ -32,13 +32,20 @@ export async function PATCH(req: NextRequest) {
     const operationalFee = Number(body.operationalFee)
     const packingFee = Number(body.packingFee)
     const markupPct = Number(body.markupPct)
+    const tierKursRoundTo = Number(body.tierKursRoundTo)
 
     if (!Number.isFinite(profitPct) || !Number.isFinite(operationalFee) || !Number.isFinite(packingFee) || !Number.isFinite(markupPct)) {
       return NextResponse.json({ error: "profitPct, operationalFee, packingFee and markupPct must be numbers" }, { status: 400 })
     }
+    // Guarded separately: it divides in ceilTo(), and a 0 or negative step would
+    // be a runtime hazard rather than just a bad default. The DB has a matching
+    // CHECK (>= 1); this returns a readable 400 instead of a 500.
+    if (!Number.isInteger(tierKursRoundTo) || tierKursRoundTo < 1) {
+      return NextResponse.json({ error: "tierKursRoundTo must be a whole number of at least 1" }, { status: 400 })
+    }
 
     await withActor(session.user.email, (tx) =>
-      updateProductDefaults({ profitPct, operationalFee, packingFee, markupPct }, tx),
+      updateProductDefaults({ profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo }, tx),
     )
     invalidate("product-defaults")
     return NextResponse.json({ ok: true })

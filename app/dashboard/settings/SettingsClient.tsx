@@ -12,6 +12,7 @@ import {
 } from "@/lib/message-templates"
 import { DEFAULT_BUSINESS_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import { DEFAULT_PRODUCT_DEFAULTS, type ProductDefaults } from "@/lib/product-defaults"
+import KursTiersSection from "./KursTiersSection"
 
 const TEMPLATE_LABELS: Record<TemplateKey, string> = {
   invoice: "Invoice message",
@@ -75,11 +76,12 @@ const SAMPLE_VARS: Record<TemplateKey, Record<string, string>> = {
 
 const textareaCls = "w-full border border-cream-border rounded-lg px-3 py-2 text-sm bg-white font-mono focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors min-h-[240px] resize-y"
 
-type Tab = "business" | "product-defaults" | "messages"
+type Tab = "business" | "product-defaults" | "kurs-tiers" | "messages"
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "business", label: "Profile" },
   { key: "product-defaults", label: "Pricing" },
+  { key: "kurs-tiers", label: "Tier Kurs" },
   { key: "messages", label: "Templates" },
 ]
 
@@ -127,6 +129,9 @@ export default function SettingsClient() {
       </div>
       <div className={tab === "product-defaults" ? "" : "hidden"}>
         <ProductDefaultsSection />
+      </div>
+      <div className={tab === "kurs-tiers" ? "" : "hidden"}>
+        <KursTiersSection />
       </div>
       <div className={`flex flex-col gap-6 ${tab === "messages" ? "" : "hidden"}`}>
         {TEMPLATE_KEYS.map((key) => (
@@ -426,6 +431,21 @@ function ProductDefaultsSection() {
               onChange={(e) => field("markupPct", e.target.value)}
               className={fieldInputCls}
             />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Tier Kurs rounding</span>
+            <input
+              type="number"
+              min="1"
+              value={defaults.tierKursRoundTo}
+              onChange={(e) => field("tierKursRoundTo", e.target.value)}
+              className={fieldInputCls}
+            />
+            {/* The only field in this card that is not merely a form pre-fill —
+                it is read when a Tier Kurs price is computed. */}
+            <span className="text-[10px] text-gray-400">
+              Prices round UP to this step. Applies on a product&apos;s next save.
+            </span>
           </label>
         </div>
       )}

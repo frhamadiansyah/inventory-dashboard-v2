@@ -12,13 +12,17 @@ import { usePaginatedFetch, type PageData } from "@/hooks/usePaginatedFetch"
 import ToggleSwitch from "@/components/ToggleSwitch"
 import SearchableSelect from "@/components/SearchableSelect"
 import SearchInput from "@/components/SearchInput"
-import { calcAbroadPrice, calcDomesticPrice, abroadProfit } from "@/lib/pricing"
+import {
+  calcAbroadPrice, calcDomesticPrice, abroadProfit, calcTierKursPrice, tierKursProfit,
+  PRICING_METHODS, PRICING_METHOD_LABEL, type PricingMethod,
+} from "@/lib/pricing"
+import { resolveTieredKurs, tiersForCountry } from "@/lib/kurs-tiers"
+import { useKursTiers } from "@/hooks/useKursTiers"
 import { useCopyFeedback } from "@/hooks/useCopyFeedback"
 import { useProductDefaults } from "@/hooks/useProductDefaults"
 
 const PAGE_SIZE = 25
 
-type PricingType = "overseas" | "domestic"
 
 const formInputCls =
   "border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
@@ -78,8 +82,21 @@ function defaultDomesticProfit(cost: number): number {
   return 5_000
 }
 
+// Keyed on pricing_method rather than `countryId != null` (migration 050): a Tier
+// Kurs product HAS a country — it needs the FX link for valas and the actual rate —
+// but must not use the overseas formula or show its inputs.
 function isAbroad(p: ProductRow) {
-  return p.countryId != null
+  return p.pricingMethod === "overseas"
+}
+
+function isTierKurs(p: ProductRow) {
+  return p.pricingMethod === "tier_kurs"
+}
+
+/** True for the methods that need a country selected, i.e. everything but
+ *  domestic. Both read valas and the country's actual rate. */
+function methodNeedsCountry(m: PricingMethod) {
+  return m === "overseas" || m === "tier_kurs"
 }
 
 // ─── Main component ────────────────────────────────────────────────────────
@@ -229,11 +246,18 @@ export default function ProductsPageClient() {
     const res = await fetch(`/api/sheets/products/${row.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
+      // PUT is a full-row update, so every field has to be resent even though only
+      // `store` changed. pricingMethod and countryId are sent explicitly rather
+      // than left to the server's keep-if-absent fallback. tieredKurs is NOT sent:
+      // the server re-resolves it from the brackets, and sending a value would
+      // imply the client had a say in it. countryId matters precisely because that
+      // lookup keys on it.
       body: JSON.stringify({
         name: row.name,
         store,
         price: row.price,
         gram: row.gram,
+        pricingMethod: row.pricingMethod,
         countryId: row.countryId,
         valas: row.valas,
         kurs: row.kurs,
@@ -320,13 +344,19 @@ export default function ProductsPageClient() {
       id: "type",
       header: "Type",
       size: 100,
-      accessorFn: (row) => isAbroad(row) ? "Profit Margin" : "Tier Rp",
+      // accessorFn receives the row DATA, not a Row wrapper.
+      accessorFn: (row) => PRICING_METHOD_LABEL[row.pricingMethod],
       filterFn: "textContains",
       cell: ({ row }) => {
-        const abroad = isAbroad(row.original)
+        const method = row.original.pricingMethod
+        const tone = {
+          overseas: "bg-blue-50 text-blue-600",
+          domestic: "bg-green-50 text-green-600",
+          tier_kurs: "bg-purple-50 text-purple-600",
+        }[method]
         return (
-          <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${abroad ? "bg-blue-50 text-blue-600" : "bg-green-50 text-green-600"}`}>
-            {abroad ? "Profit Margin" : "Tier Rp"}
+          <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${tone}`}>
+            {PRICING_METHOD_LABEL[method]}
           </span>
         )
       },
@@ -345,7 +375,7 @@ export default function ProductsPageClient() {
       size: 90,
       filterFn: "numeric",
       enableColumnFilter: false,
-      cell: ({ row }) => <span className="tabular-nums">{isAbroad(row.original) ? fmt(row.original.valas) : "—"}</span>,
+      cell: ({ row }) => <span className="tabular-nums">{row.original.pricingMethod !== "domestic" ? fmt(row.original.valas) : "—"}</span>,
       meta: { align: "right" },
     },
     {
@@ -363,7 +393,23 @@ export default function ProductsPageClient() {
       size: 90,
       filterFn: "numeric",
       enableColumnFilter: false,
-      cell: ({ row }) => <span className="tabular-nums">{isAbroad(row.original) ? fmt(row.original.kurs) : "—"}</span>,
+      cell: ({ row }) => <span className="tabular-nums">{row.original.pricingMethod !== "domestic" ? fmt(row.original.kurs) : "—"}</span>,
+      meta: { align: "right" },
+    },
+    {
+      accessorKey: "tieredKurs",
+      header: "Tier Rate",
+      size: 100,
+      filterFn: "numeric",
+      enableColumnFilter: false,
+      // Only Tier Kurs rows have one; the rest store NULL.
+      cell: ({ row }) => (
+        <span className="tabular-nums">
+          {isTierKurs(row.original) && row.original.tieredKurs != null
+            ? fmt(row.original.tieredKurs)
+            : "—"}
+        </span>
+      ),
       meta: { align: "right" },
     },
     {
@@ -521,6 +567,7 @@ export default function ProductsPageClient() {
             id: false,
             type: false,
             kurs: false,
+            tieredKurs: false,
             cargoPerKg: false,
             operationalFee: false,
             packingFee: false,
@@ -734,7 +781,7 @@ function AddProductForm({
   seed?: ProductRow | null
   onConsumeSeed?: () => void
 }) {
-  const [type, setType] = useState<PricingType>("overseas")
+  const [type, setType] = useState<PricingMethod>("overseas")
   const [name, setName] = useState("")
   const [store, setStore] = useState("")
   const [countryId, setCountryId] = useState<number | null>(countries[0]?.id ?? null)
@@ -755,6 +802,7 @@ function AddProductForm({
   // replace the hardcoded "30"/"5000"/"5000" once fetched — but only if the
   // user hasn't started a duplicate flow (seed) in the meantime.
   const productDefaults = useProductDefaults()
+  const { tiers: kursTiers } = useKursTiers()
   const defaultsAppliedRef = useRef(false)
   useEffect(() => {
     if (defaultsAppliedRef.current || !productDefaults || seed) return
@@ -772,17 +820,23 @@ function AddProductForm({
   // Duplicate button still re-fires this effect.
   useEffect(() => {
     if (!seed) return
-    const abroad = seed.countryId != null
-    setType(abroad ? "overseas" : "domestic")
+    // Copy the method straight off the seed. Re-deriving it from countryId would
+    // silently turn a duplicated Tier Kurs product into an Overseas one.
+    setType(seed.pricingMethod)
     setName(seed.name)
     setStore(seed.store ?? "")
     setGram(String(seed.gram ?? 0))
-    if (abroad) {
+    if (seed.pricingMethod === "overseas") {
       setCountryId(seed.countryId)
       setValas(String(seed.valas ?? 0))
       setProfitPct(String(seed.profitPct ?? 0))
       setOpFee(String(seed.operationalFee ?? 5000))
       setPackFee(String(seed.packingFee ?? 5000))
+    } else if (seed.pricingMethod === "tier_kurs") {
+      // No rate copied: the bracket is re-resolved from the duplicated valas, so a
+      // stale snapshot can't ride along into the new product.
+      setCountryId(seed.countryId)
+      setValas(String(seed.valas ?? 0))
     } else {
       setCost(String(seed.cost ?? 0))
       setProfitFixed(String(seed.profitFixed ?? 0))
@@ -800,6 +854,20 @@ function AddProductForm({
 
   const selectedCountry = countries.find((c) => c.id === countryId)
 
+  // The rate this valas will actually be charged. Recomputed as the valas is typed,
+  // so the preview jumps the moment it crosses a bracket floor. The server
+  // re-resolves it on save — this is presentation only.
+  const chargedKurs = useMemo(
+    () => (selectedCountry
+      ? resolveTieredKurs(
+          tiersForCountry(kursTiers, selectedCountry.id),
+          Number(valas) || 0,
+          selectedCountry.kurs,
+        )
+      : 0),
+    [kursTiers, selectedCountry, valas],
+  )
+
   const pricePreview = useMemo(() => {
     if (type === "overseas") {
       const { cogs, price } = calcAbroadPrice({
@@ -813,9 +881,18 @@ function AddProductForm({
       })
       return { cogs, price }
     }
+    if (type === "tier_kurs") {
+      return calcTierKursPrice({
+        valas: Number(valas) || 0,
+        tieredKurs: chargedKurs,
+        kurs: selectedCountry?.kurs ?? 0,
+        roundTo: productDefaults?.tierKursRoundTo ?? 5000,
+      })
+    }
     const price = calcDomesticPrice(Number(cost) || 0, Number(profitFixed) || 0)
     return { cogs: 0, price }
-  }, [type, valas, gram, profitPct, opFee, packFee, cost, profitFixed, selectedCountry])
+  }, [type, valas, gram, profitPct, opFee, packFee, cost, profitFixed, selectedCountry,
+      chargedKurs, productDefaults])
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault()
@@ -827,6 +904,7 @@ function AddProductForm({
         store: store.trim(),
         price: pricePreview.price,
         gram: Number(gram) || 0,
+        pricingMethod: type,
       }
 
       if (type === "overseas") {
@@ -837,6 +915,12 @@ function AddProductForm({
         body.profitPct = Number(profitPct) || 0
         body.operationalFee = Number(opFee) || 0
         body.packingFee = Number(packFee) || 0
+      } else if (type === "tier_kurs") {
+        // No tieredKurs and no price: the server resolves the bracket itself and
+        // ignores anything sent for either. countryId is what it keys the lookup on.
+        body.countryId = countryId
+        body.valas = Number(valas) || 0
+        body.kurs = selectedCountry?.kurs ?? 0
       } else {
         body.cost = Number(cost) || 0
         body.profitFixed = Number(profitFixed) || 0
@@ -876,14 +960,21 @@ function AddProductForm({
             onClick={() => setType("overseas")}
             className={`px-3 py-1 transition-colors ${type === "overseas" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
           >
-            Profit Margin
+            {PRICING_METHOD_LABEL.overseas}
           </button>
           <button
             type="button"
             onClick={() => setType("domestic")}
             className={`px-3 py-1 transition-colors ${type === "domestic" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
           >
-            Tier Rp
+            {PRICING_METHOD_LABEL.domestic}
+          </button>
+          <button
+            type="button"
+            onClick={() => setType("tier_kurs")}
+            className={`px-3 py-1 transition-colors ${type === "tier_kurs" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
+          >
+            {PRICING_METHOD_LABEL.tier_kurs}
           </button>
         </div>
       </div>
@@ -992,6 +1083,57 @@ function AddProductForm({
                 PROFIT: Rp {fmt(abroadProfit({ price: pricePreview.price, cogs: pricePreview.cogs, operationalFee: Number(opFee) || 0, packingFee: Number(packFee) || 0 }))}
               </span>
             </div>
+          )}
+        </>
+      )}
+
+      {type === "tier_kurs" && (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Field label="Country">
+              <SearchableSelect
+                value={countryId != null ? String(countryId) : ""}
+                onChange={(v) => setCountryId(v ? Number(v) : null)}
+                options={countries.map((c) => ({ value: String(c.id), label: `${c.name} (${c.currency})` }))}
+                placeholder="Select country…"
+                disabled={adding}
+                searchable={false}
+                alwaysShowAll
+              />
+            </Field>
+            <Field label="Valas">
+              <input value={valas} onChange={(e) => setValas(e.target.value)} type="number" step="any" min="0" placeholder="0" disabled={adding} className={formInputCls} />
+            </Field>
+            <Field label="Gram">
+              <input value={gram} onChange={(e) => setGram(e.target.value)} type="number" min="0" placeholder="0" disabled={adding} className={formInputCls} />
+            </Field>
+            <Field label="Price">
+              <div className={`${formInputCls} bg-gray-50 text-gray-500 flex items-center`}>Rp {fmt(pricePreview.price)}</div>
+            </Field>
+          </div>
+
+          {/* No profit %, no cargo, no fees: the margin is the spread between the
+              charged rate and the actual one. Brackets are edited in Settings. */}
+          {selectedCountry && (
+            <div className="flex items-center justify-between gap-1 flex-nowrap whitespace-nowrap rounded-lg bg-gray-50 border border-cream-border px-3 py-3 text-[9px] md:text-xs text-gray-500">
+              <span>
+                RATE: {fmt(selectedCountry.kurs)}
+                {chargedKurs !== selectedCountry.kurs && (
+                  <> → <span className="font-semibold text-foreground">CHARGED: {fmt(chargedKurs)}</span></>
+                )}
+              </span>
+              <span>COST: {fmt(Math.round(pricePreview.cogs))}</span>
+              <span className={`font-semibold ${pricePreview.price - pricePreview.cogs >= 0 ? "text-green-700" : "text-red-600"}`}>
+                PROFIT: Rp {fmt(tierKursProfit(pricePreview))}
+              </span>
+            </div>
+          )}
+
+          {selectedCountry && chargedKurs === selectedCountry.kurs && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              No kurs bracket covers this valas for {selectedCountry.name}, so the flat
+              rate is used and there is no margin. Add brackets in Settings → Tier Kurs.
+            </p>
           )}
         </>
       )}
@@ -1196,9 +1338,12 @@ function EditProductModal({
   onDelete?: () => void
   onDuplicate?: () => void
 }) {
+  const productDefaults = useProductDefaults()
+  const { tiers: kursTiers } = useKursTiers()
   const [draft, setDraft] = useState({
     name: row.name,
     store: row.store,
+    method: row.pricingMethod,
     countryId: row.countryId,
     valas: String(row.valas),
     gram: String(row.gram),
@@ -1212,7 +1357,19 @@ function EditProductModal({
   const [saveError, setSaveError] = useState<string | null>(null)
 
   const draftCountry = countries.find((c) => c.id === draft.countryId)
-  const draftAbroad = draft.countryId != null
+  const draftAbroad = draft.method === "overseas"
+  const draftTierKurs = draft.method === "tier_kurs"
+
+  // The rate this valas would be charged, re-resolved as it is edited. Falls back
+  // to the row's own snapshot when there is no country to resolve against, so an
+  // edit never silently zeroes the rate the price was built from.
+  const draftChargedKurs = draftCountry
+    ? resolveTieredKurs(
+        tiersForCountry(kursTiers, draftCountry.id),
+        Number(draft.valas) || 0,
+        draftCountry.kurs,
+      )
+    : (row.tieredKurs ?? 0)
 
   // Live price + per-unit COGS + profit. Profit (overseas) = price − COGS − fees,
   // matching the Add form's preview.
@@ -1230,8 +1387,18 @@ function EditProductModal({
       const profit = abroadProfit({ price, cogs, operationalFee: Number(draft.opFee) || 0, packingFee: Number(draft.packFee) || 0 })
       return { price, cogs: Math.round(cogs), profit }
     }
+    if (draftTierKurs) {
+      const { cogs, price } = calcTierKursPrice({
+        valas: Number(draft.valas) || 0,
+        tieredKurs: draftChargedKurs,
+        kurs: draftCountry?.kurs ?? row.kurs,
+        roundTo: productDefaults?.tierKursRoundTo ?? 5000,
+      })
+      return { price, cogs: Math.round(cogs), profit: tierKursProfit({ price, cogs }) }
+    }
     return { price: calcDomesticPrice(Number(draft.cost) || 0, Number(draft.profitFixed) || 0), cogs: null, profit: null }
-  }, [draft, draftAbroad, draftCountry, row.kurs, row.cargoPerKg])
+  }, [draft, draftAbroad, draftTierKurs, draftChargedKurs, draftCountry, row.kurs,
+      row.cargoPerKg, productDefaults])
 
   async function handleSave() {
     setSaving(true)
@@ -1242,15 +1409,17 @@ function EditProductModal({
         store: draft.store.trim(),
         price: editCalc.price,
         gram: Number(draft.gram) || 0,
+        pricingMethod: draft.method,
         countryId: draft.countryId,
-        valas: draftAbroad ? Number(draft.valas) || 0 : 0,
-        kurs: draftAbroad ? (draftCountry?.kurs ?? row.kurs) : 0,
+        // valas and kurs are read by BOTH overseas and tier_kurs.
+        valas: draft.method !== "domestic" ? Number(draft.valas) || 0 : 0,
+        kurs: draft.method !== "domestic" ? (draftCountry?.kurs ?? row.kurs) : 0,
         cargoPerKg: draftAbroad ? (draftCountry?.cargoPerKg ?? row.cargoPerKg) : 0,
         profitPct: draftAbroad ? Number(draft.profitPct) || 0 : 0,
         operationalFee: draftAbroad ? Number(draft.opFee) || 0 : 5000,
         packingFee: draftAbroad ? Number(draft.packFee) || 0 : 5000,
-        cost: draftAbroad ? 0 : Number(draft.cost) || 0,
-        profitFixed: draftAbroad ? 0 : Number(draft.profitFixed) || 0,
+        cost: draft.method === "domestic" ? Number(draft.cost) || 0 : 0,
+        profitFixed: draft.method === "domestic" ? Number(draft.profitFixed) || 0 : 0,
       }
 
       const res = await fetch(`/api/sheets/products/${row.id}`, {
@@ -1266,10 +1435,14 @@ function EditProductModal({
         store: draft.store.trim(),
         price: editCalc.price,
         gram: Number(draft.gram) || 0,
+        pricingMethod: draft.method,
         countryId: draft.countryId,
         countryName: draftCountry?.name ?? "",
         valas: Number(body.valas) || 0,
         kurs: Number(body.kurs) || 0,
+        // Mirrors the server's rule: null for every method but tier_kurs, so the
+        // Tier Rate cell doesn't show a number the row doesn't have.
+        tieredKurs: draftTierKurs ? draftChargedKurs : null,
         cargoPerKg: Number(body.cargoPerKg) || 0,
         profitPct: Number(body.profitPct) || 0,
         operationalFee: Number(body.operationalFee) || 0,
@@ -1329,9 +1502,35 @@ function EditProductModal({
             disabled={saving}
           />
         </Field>
-        {draftAbroad ? (
+
+        {/* Explicit method picker. Before Tier Kurs the method was implied by
+            whether a country was set, which cannot distinguish overseas from
+            tier_kurs — both have one. */}
+        <Field label="Pricing">
+          <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs self-start">
+            {PRICING_METHODS.map((m) => (
+              <button
+                key={m}
+                type="button"
+                disabled={saving}
+                onClick={() => setDraft((d) => ({
+                  ...d,
+                  method: m,
+                  // Domestic has no country; the other two require one, so carry
+                  // the row's original rather than leaving it null.
+                  countryId: m === "domestic" ? null : (d.countryId ?? row.countryId),
+                }))}
+                className={`flex-1 px-3 py-1.5 transition-colors ${draft.method === m ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
+              >
+                {PRICING_METHOD_LABEL[m]}
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        {draft.method !== "domestic" ? (
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Type">
+            <Field label="Country">
               <SearchableSelect
                 value={draft.countryId != null ? String(draft.countryId) : ""}
                 onChange={(v) => setDraft((d) => ({ ...d, countryId: v ? Number(v) : null }))}
@@ -1347,22 +1546,44 @@ function EditProductModal({
               <input value={draft.valas} onChange={(e) => setDraft((d) => ({ ...d, valas: e.target.value }))} type="number" step="any" min="0" disabled={saving} className={formInputCls} />
             </Field>
           </div>
-        ) : (
-          <Field label="Type">
-            <SearchableSelect
-              value={draft.countryId != null ? String(draft.countryId) : ""}
-              onChange={(v) => setDraft((d) => ({ ...d, countryId: v ? Number(v) : null }))}
-              options={countries.map((c) => ({ value: String(c.id), label: `${c.name} (${c.currency})` }))}
-              placeholder="Domestic"
-              disabled={saving}
-              searchable={false}
-              clearable
-              alwaysShowAll
-            />
-          </Field>
+        ) : null}
+
+        {draftTierKurs && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Gram">
+                <input value={draft.gram} onChange={(e) => setDraft((d) => ({ ...d, gram: e.target.value }))} type="number" min="0" disabled={saving} className={formInputCls} />
+              </Field>
+              <Field label="Price">
+                <div className={`${formInputCls} bg-gray-50 text-gray-500 flex items-center`}>Rp {fmt(editCalc.price)}</div>
+              </Field>
+            </div>
+
+            {draftCountry && (
+              <div className="flex items-center justify-between gap-1 flex-nowrap whitespace-nowrap rounded-lg bg-gray-50 border border-cream-border px-3 py-3 text-[9px] md:text-xs text-gray-500">
+                <span>
+                  RATE: {fmt(draftCountry.kurs)}
+                  {draftChargedKurs !== draftCountry.kurs && (
+                    <> → <span className="font-semibold text-foreground">CHARGED: {fmt(draftChargedKurs)}</span></>
+                  )}
+                </span>
+                <span>COST: {fmt(editCalc.cogs ?? 0)}</span>
+                <span className={`font-semibold ${(editCalc.profit ?? 0) >= 0 ? "text-green-700" : "text-red-600"}`}>
+                  PROFIT: Rp {fmt(editCalc.profit ?? 0)}
+                </span>
+              </div>
+            )}
+
+            {draftCountry && draftChargedKurs === draftCountry.kurs && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                No kurs bracket covers this valas for {draftCountry.name}, so the flat rate
+                is used and there is no margin. Add brackets in Settings → Tier Kurs.
+              </p>
+            )}
+          </>
         )}
 
-        {draftAbroad ? (
+        {draftAbroad && (
           <>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Gram">
@@ -1410,7 +1631,11 @@ function EditProductModal({
               </div>
             )}
           </>
-        ) : (
+        )}
+
+        {/* Gated on domestic explicitly, not on `!draftAbroad`: that would also
+            catch tier_kurs and render the cost/fixed-profit inputs for it. */}
+        {draft.method === "domestic" && (
           <div className="grid grid-cols-2 gap-3">
             <Field label="Base Cost">
               <input value={draft.cost} onChange={(e) => setDraft((d) => ({ ...d, cost: e.target.value }))} type="number" min="0" disabled={saving} className={formInputCls} />
