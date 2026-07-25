@@ -791,7 +791,9 @@ export async function recordNotReceived(
     SELECT id, customer,
            COALESCE(unit_buy, 0)::int  AS "unitBuy",
            COALESCE(unit_ship, 0)::int AS "unitShip",
-           (unit_dispatch - COALESCE(unit_arrive, 0))::int AS pending
+           -- Cap at the ordered unit count: a manual over-dispatch (unit_dispatch > unit)
+           -- must never let us cancel/refund more units than the customer ordered.
+           LEAST(unit_dispatch - COALESCE(unit_arrive, 0), unit)::int AS pending
     FROM orders
     WHERE event = ${data.event}
       AND product_id = ${data.productId}
