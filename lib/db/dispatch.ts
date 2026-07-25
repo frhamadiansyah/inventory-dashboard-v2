@@ -173,14 +173,23 @@ export interface DispatchDocLine {
 }
 
 /**
- * Per-(product, dispatch_receipt) tally of *dispatched* units for one event, for
+ * Per-(dispatch_receipt, product) tally of *dispatched* units for one event, for
  * the cargo-style dispatch document. `receipt` is an optional case-insensitive
- * SUBSTRING match on dispatch_receipt (e.g. "MNC" matches "MNC38179");
- * empty/absent = every dispatched line for the event. qty = SUM(unit_dispatch).
- * Grouping by receipt (not just product) so the document can show a RECEIPT
- * column — a product dispatched under two receipts becomes two rows.
- * valas/currency come from the product and its country, so the cargo template
- * can price and group the lines by currency.
+ * SUBSTRING match on the receipt (e.g. "MNC" matches "MNC38179"); empty/absent =
+ * every dispatched batch for the event. valas/currency come from the product and
+ * its country, so the cargo template can price and group the lines by currency.
+ *
+ * Read from the append-only `audit.audit_log` (migration 029) rather than the
+ * orders table, because a single order dispatched in several batches accumulates
+ * its receipts comma-joined in one `dispatch_receipt` field (the dispatch route
+ * appends `"<existing>, <new>"`) while `unit_dispatch` holds only the running
+ * total — so the orders row alone can't say how many units went under each
+ * receipt. Each dispatch UPDATE is one audit entry: the per-row delta
+ * `new.unit_dispatch − old.unit_dispatch` is that batch's qty, and the newly
+ * appended tail of `dispatch_receipt` (everything after the old value + ", ") is
+ * that batch's receipt. Summing per (receipt, product) gives an accurate row for
+ * each receipt. A batch dispatched without a tracking ref leaves the string
+ * unchanged, so its receipt resolves to '' (shown as "—").
  */
 export async function getDispatchDocument(
   event: string,
@@ -188,25 +197,42 @@ export async function getDispatchDocument(
 ): Promise<DispatchDocLine[]> {
   const receiptFilter =
     receipt && receipt.trim()
-      ? sql`AND o.dispatch_receipt ILIKE '%' || ${receipt.trim()} || '%'`
+      ? sql`AND batch.receipt ILIKE '%' || ${receipt.trim()} || '%'`
       : sql``
   const rows = await sql`
     SELECT
-      p.name  AS product_name,
+      p.name AS product_name,
       p.valas,
       COALESCE(c.currency, '') AS currency,
-      COALESCE(o.dispatch_receipt, '') AS receipt,
-      SUM(o.unit_dispatch)::int AS qty
-    FROM orders o
-    JOIN products p ON p.id = o.product_id
+      batch.receipt AS receipt,
+      SUM(batch.qty)::int AS qty
+    FROM (
+      SELECT
+        (a.new_row->>'product_id')::int AS product_id,
+        COALESCE((a.new_row->>'unit_dispatch')::int, 0)
+          - COALESCE((a.old_row->>'unit_dispatch')::int, 0) AS qty,
+        CASE
+          WHEN COALESCE(a.old_row->>'dispatch_receipt', '') = ''
+            THEN COALESCE(a.new_row->>'dispatch_receipt', '')
+          ELSE substring(
+            COALESCE(a.new_row->>'dispatch_receipt', '')
+            FROM char_length(a.old_row->>'dispatch_receipt') + 3
+          )
+        END AS receipt
+      FROM audit.audit_log a
+      WHERE a.table_name = 'orders'
+        AND a.action IN ('INSERT', 'UPDATE')
+        AND (a.new_row->>'event') = ${event}
+        AND COALESCE((a.new_row->>'unit_dispatch')::int, 0)
+            > COALESCE((a.old_row->>'unit_dispatch')::int, 0)
+    ) batch
+    JOIN products p ON p.id = batch.product_id
     LEFT JOIN countries c ON c.id = p.country_id
-    WHERE o.event = ${event}
-      AND o.unit_dispatch IS NOT NULL
-      AND o.unit_dispatch > 0
+    WHERE TRUE
       ${receiptFilter}
-    GROUP BY p.id, c.currency, o.dispatch_receipt
-    HAVING SUM(o.unit_dispatch) > 0
-    ORDER BY o.dispatch_receipt, p.store NULLS LAST, p.name
+    GROUP BY p.id, c.currency, batch.receipt
+    HAVING SUM(batch.qty) > 0
+    ORDER BY batch.receipt, p.name
   `
   return rows.map((r) => ({
     productName: r.product_name as string,
