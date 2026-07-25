@@ -182,15 +182,18 @@ export interface DispatchDocLine {
   qty: number
   valas: number
   currency: string
+  receipt: string
 }
 
 /**
- * Per-product tally of *dispatched* units for one event, for the cargo-style
- * dispatch document. `receipt` is an optional case-insensitive SUBSTRING match
- * on dispatch_receipt (e.g. "MNC" matches "MNC38179"); empty/absent = every
- * dispatched line for the event. qty = SUM(unit_dispatch). valas/currency come
- * from the product and its country (same join as getDispatchList), so the
- * cargo template can price and group the lines by currency.
+ * Per-(product, dispatch_receipt) tally of *dispatched* units for one event, for
+ * the cargo-style dispatch document. `receipt` is an optional case-insensitive
+ * SUBSTRING match on dispatch_receipt (e.g. "MNC" matches "MNC38179");
+ * empty/absent = every dispatched line for the event. qty = SUM(unit_dispatch).
+ * Grouping by receipt (not just product) so the document can show a RECEIPT
+ * column — a product dispatched under two receipts becomes two rows.
+ * valas/currency come from the product and its country (same join as
+ * getDispatchList), so the cargo template can price and group by currency.
  */
 export async function getDispatchDocument(
   event: string,
@@ -205,6 +208,7 @@ export async function getDispatchDocument(
       p.name  AS product_name,
       p.valas,
       COALESCE(c.currency, '') AS currency,
+      COALESCE(o.dispatch_receipt, '') AS receipt,
       SUM(o.unit_dispatch)::int AS qty
     FROM orders o
     JOIN products p ON p.id = o.product_id
@@ -213,14 +217,15 @@ export async function getDispatchDocument(
       AND o.unit_dispatch IS NOT NULL
       AND o.unit_dispatch > 0
       ${receiptFilter}
-    GROUP BY p.id, c.currency
+    GROUP BY p.id, c.currency, o.dispatch_receipt
     HAVING SUM(o.unit_dispatch) > 0
-    ORDER BY p.store NULLS LAST, p.name
+    ORDER BY o.dispatch_receipt, p.store NULLS LAST, p.name
   `
   return rows.map((r) => ({
     productName: r.product_name as string,
     qty: r.qty as number,
     valas: Number(r.valas) || 0,
     currency: (r.currency as string) ?? "",
+    receipt: (r.receipt as string) ?? "",
   }))
 }

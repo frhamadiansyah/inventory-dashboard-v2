@@ -6,6 +6,7 @@ export interface CargoDocLine {
   qty: number
   valas: number // unit price in `currency`
   currency: string // currency code, e.g. "USD"; "" when the product has none
+  receipt?: string // optional dispatch receipt; shown as a RECEIPT column when present
 }
 
 export interface CargoDocData {
@@ -38,7 +39,6 @@ const COL_ITEM_X = MARGIN
 const COL_TOTAL_R = PAGE_W - MARGIN
 const COL_PRICE_R = COL_TOTAL_R - 42
 const COL_QTY_R = COL_PRICE_R - 28
-const ITEM_W = COL_QTY_R - COL_ITEM_X - 22
 
 const LINE_H = 5
 
@@ -53,6 +53,15 @@ export async function generateCargoDocument({ name, date, lines }: CargoDocData)
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" })
 
   let y = MARGIN
+
+  // Optional RECEIPT column (before ITEM), shown only when some line carries a
+  // dispatch receipt (the dispatch-document flow). The in-list cargo panel has
+  // no receipts, so its layout is unchanged.
+  const hasReceipt = lines.some((l) => !!l.receipt && l.receipt.trim() !== "")
+  const RECEIPT_W = 30
+  const receiptX = MARGIN
+  const itemX = hasReceipt ? MARGIN + RECEIPT_W + 4 : COL_ITEM_X
+  const itemW = COL_QTY_R - itemX - 22
 
   function header() {
     // The box name is the headline; fall back to the brand name when unset.
@@ -81,7 +90,8 @@ export async function generateCargoDocument({ name, date, lines }: CargoDocData)
     doc.setTextColor(120)
     doc.setFont("helvetica", "bold")
     doc.setFontSize(8.5)
-    doc.text("ITEM", COL_ITEM_X, y)
+    if (hasReceipt) doc.text("RECEIPT", receiptX, y)
+    doc.text("ITEM", itemX, y)
     doc.text("QTY", COL_QTY_R, y, { align: "right" })
     doc.text("UNIT PRICE", COL_PRICE_R, y, { align: "right" })
     doc.text("LINE TOTAL", COL_TOTAL_R, y, { align: "right" })
@@ -142,15 +152,19 @@ export async function generateCargoDocument({ name, date, lines }: CargoDocData)
     let subtotal = 0
     let totalQty = 0
     for (const line of groupLines) {
-      const productLines = doc.splitTextToSize(line.productName, ITEM_W) as string[]
-      const rowH = productLines.length * LINE_H
+      const productLines = doc.splitTextToSize(line.productName, itemW) as string[]
+      const receiptLines = hasReceipt
+        ? (doc.splitTextToSize(line.receipt || "—", RECEIPT_W) as string[])
+        : []
+      const rowH = Math.max(productLines.length, receiptLines.length || 1) * LINE_H
       ensureSpace(rowH)
 
       const lineTotal = line.qty * line.valas
       subtotal += lineTotal
       totalQty += line.qty
 
-      doc.text(productLines, COL_ITEM_X, y + 3.5)
+      if (hasReceipt) doc.text(receiptLines, receiptX, y + 3.5)
+      doc.text(productLines, itemX, y + 3.5)
       doc.text(String(line.qty), COL_QTY_R, y + 3.5, { align: "right" })
       doc.text(`${fmtNum(line.valas)}${suffix}`, COL_PRICE_R, y + 3.5, { align: "right" })
       doc.text(`${fmtNum(lineTotal)}${suffix}`, COL_TOTAL_R, y + 3.5, { align: "right" })
