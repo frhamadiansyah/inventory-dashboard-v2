@@ -23,6 +23,8 @@ export async function GET(req: NextRequest) {
         store: params.get("store") ?? undefined,
         type: params.get("type") ?? undefined,
         country: params.get("country") ?? undefined,
+        valas: (params.get("valas") as "filled" | "blank" | null) ?? undefined,
+        gram: (params.get("gram") as "filled" | "blank" | null) ?? undefined,
         sortKey: params.get("sortKey") ?? undefined,
         sortDir: (params.get("sortDir") as "asc" | "desc") ?? undefined,
         skipCount: params.get("skipCount") === "true",

@@ -101,6 +101,13 @@ export default function ProductsPageClient() {
   const [globalFilter, setGlobalFilter] = useState("")
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: PAGE_SIZE })
 
+  // Mobile-only filter sheet: store (searchable) + valas/gram blank-or-filled.
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [mStore, setMStore] = useState("")
+  const [mValas, setMValas] = useState<"" | "filled" | "blank">("")
+  const [mGram, setMGram] = useState<"" | "filled" | "blank">("")
+  const mobileFilterCount = [mStore, mValas, mGram].filter(Boolean).length
+
   const [addOpen, setAddOpen] = useState(false)
   const [mobileAddOpen, setMobileAddOpen] = useState(false)
   // Mobile row action sheet + the edit modal it can open — separate from
@@ -145,8 +152,12 @@ export default function ProductsPageClient() {
       else if (cf.id === "type") f.type = v
       else if (cf.id === "countryName") f.country = v
     }
+    // Mobile filter sheet (store overrides any desktop store column filter).
+    if (mStore) f.store = mStore
+    if (mValas) f.valas = mValas
+    if (mGram) f.gram = mGram
     return f
-  }, [columnFilters])
+  }, [columnFilters, mStore, mValas, mGram])
 
   const fetchSort = useMemo(() => {
     if (sorting.length === 0) return null
@@ -207,6 +218,8 @@ export default function ProductsPageClient() {
     setGlobalFilter(u)
     setPagination((p) => ({ ...p, pageIndex: 0 }))
   }, [])
+  // Mobile filter sheet changes also reset to page 1.
+  useEffect(() => { setPagination((p) => ({ ...p, pageIndex: 0 })) }, [mStore, mValas, mGram])
 
   // Inline store edit from the table. The products PUT is a full-row update, so
   // we rebuild the body from the existing row (store is independent of price)
@@ -552,6 +565,19 @@ export default function ProductsPageClient() {
               {mobileIdDesc ? <path d="m6 9 6 6 6-6" /> : <path d="m18 15-6-6-6 6" />}
             </svg>
           </button>
+          <button
+            type="button"
+            onClick={() => setFilterOpen(true)}
+            aria-label="Filter products"
+            className={`relative shrink-0 inline-flex items-center justify-center w-[42px] rounded-lg border bg-white active:border-brand active:text-brand ${mobileFilterCount > 0 ? "border-brand text-brand" : "border-cream-border text-gray-600"}`}
+          >
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />
+            </svg>
+            {mobileFilterCount > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-brand text-white text-[10px] font-bold flex items-center justify-center">{mobileFilterCount}</span>
+            )}
+          </button>
         </div>
         {data.length === 0 && (
           <div className="rounded-xl border border-cream-border bg-white p-8 text-center text-sm text-gray-400">{fetchState.loading ? "Loading…" : "No products"}</div>
@@ -615,6 +641,51 @@ export default function ProductsPageClient() {
           onDelete={() => { const r = editingProduct; setEditingProduct(null); handleMobileDelete(r) }}
           onDuplicate={() => { const r = editingProduct; setEditingProduct(null); handleDuplicate(r) }}
         />
+      )}
+
+      {/* Mobile filter sheet */}
+      {filterOpen && (
+        <div className="md:hidden fixed inset-0 z-40 bg-black/40 flex flex-col justify-end" onClick={() => setFilterOpen(false)}>
+          <div className="bg-white rounded-t-2xl border-t border-cream-border p-5 pb-8 flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <div className="text-base font-semibold text-foreground">Filter products</div>
+              <button type="button" onClick={() => { setMStore(""); setMValas(""); setMGram("") }} className="text-xs text-gray-400 hover:text-brand">Clear all</button>
+            </div>
+
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-gray-500">Store</span>
+              <SearchableSelect
+                value={mStore}
+                onChange={setMStore}
+                options={stores.map((s) => ({ value: s, label: s }))}
+                placeholder="Any store"
+                clearable
+              />
+            </label>
+
+            {([["valas", "Valas / IDR", mValas, setMValas] as const, ["gram", "Gram", mGram, setMGram] as const]).map(([key, label, val, set]) => (
+              <div key={key} className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-gray-500">{label}</span>
+                <div className="flex rounded-lg border border-cream-border overflow-hidden text-sm">
+                  {([["", "Any"], ["filled", "Has value"], ["blank", "Blank"]] as const).map(([v, t]) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => set(v)}
+                      className={`flex-1 px-2 py-2 font-medium transition-colors ${val === v ? "bg-brand text-white" : "text-gray-500 hover:bg-cream"}`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            <button type="button" onClick={() => setFilterOpen(false)} className="mt-1 px-4 py-2.5 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/90 transition-colors">
+              Done
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Mobile add FAB */}
