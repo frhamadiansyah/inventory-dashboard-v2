@@ -14,7 +14,7 @@ export async function getSheetOptions(): Promise<SheetOptions> {
     sql`SELECT name, is_active FROM events ORDER BY created_at DESC, id DESC`,
     sql`SELECT id, name, store, price, is_active FROM products WHERE name != '' ORDER BY name`,
     sql`
-      SELECT instagram_id FROM customers
+      SELECT instagram_id, whatsapp FROM customers
       WHERE instagram_id NOT LIKE '\\_old%' AND instagram_id != 'gantialamat'
       ORDER BY instagram_id
     `,
@@ -29,6 +29,15 @@ export async function getSheetOptions(): Promise<SheetOptions> {
     ...new Set(customerRows.map((r) => normalizeCustomer(r.instagram_id))),
   ].sort()
 
+  // Canonical customer handle → mobile (whatsapp), for the order picker's meta.
+  // First non-empty number wins when handles collapse to the same canonical.
+  const customerMobiles: Record<string, string> = {}
+  for (const r of customerRows) {
+    const key = normalizeCustomer(r.instagram_id)
+    const wa = ((r.whatsapp as string) ?? "").trim()
+    if (wa && !customerMobiles[key]) customerMobiles[key] = wa
+  }
+
   const accounts = [
     ...new Set([...FALLBACK_ACCOUNTS, ...accountRows.map((r) => r.account as string)]),
   ].sort()
@@ -38,6 +47,7 @@ export async function getSheetOptions(): Promise<SheetOptions> {
     activeEvents: eventsRows.filter((r) => r.is_active).map((r) => r.name),
     items: productRows.map((r) => ({ id: r.id, name: r.name, store: r.store, price: r.price, active: r.is_active })),
     customers,
+    customerMobiles,
     accounts,
   }
 }
