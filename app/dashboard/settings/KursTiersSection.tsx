@@ -193,6 +193,13 @@ function CountryBrackets({
     valas: previewValas,
     tieredKurs: charged,
     kurs: country.kurs,
+    // No product here, so no weight: this previews what the BRACKETS do to a valas
+    // amount. A real product's cost also carries (gram / 1000) × the country's
+    // shipping rate, so its profit will be lower than what this shows.
+    gram: 0,
+    cargoPerKg: 0,
+    // Nor a packing charge: this previews what the BRACKETS do, not a whole product.
+    packingFee: 0,
     roundTo,
   })
 
@@ -361,7 +368,7 @@ function CountryBrackets({
             {" · cost Rp "}{fmt(Math.round(preview.cogs))}
             {" · profit "}
             <span className={preview.price - preview.cogs >= 0 ? "text-green-700" : "text-red-600"}>
-              Rp {fmt(tierKursProfit(preview))}
+              Rp {fmt(tierKursProfit({ ...preview, packingFee: 0 }))}
             </span>
           </p>
           <p className="text-[10px] text-gray-400">

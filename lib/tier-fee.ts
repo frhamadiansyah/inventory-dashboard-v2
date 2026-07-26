@@ -7,20 +7,42 @@
 // two different answers to "which bracket applies" in one app would be a bug waiting
 // to happen.
 //
-// Two scopes, distinguished by countryId (see migration 053):
+// Two scopes, named by tier_fee_brackets.scope (see migrations 056/057). BOTH are
+// denominated in rupiah — floors and fees alike — and differ only in which base cost
+// they are matched against, and in who has the last word:
 //
-//   countryId null  — the RUPIAH set. Base is a rupiah cost, fee is rupiah.
-//                     A SUGGESTION only: it pre-fills the form's Fee field, the owner
-//                     can type over it, and nothing recomputes it afterwards.
-//   countryId set   — that country's VALAS set. Base and fee are both in the
-//                     country's currency, and the fee is converted at the country's
-//                     rate. Resolved server-side on every save, so unlike the rupiah
-//                     set this one IS authoritative.
+//   'rupiah'  the TYPED base cost of a Markup row with no country. A SUGGESTION only:
+//             it pre-fills the form's Fee field, the owner can type over it, and
+//             nothing recomputes it afterwards.
+//   'valas'   the DERIVED base cost (valas × kurs + freight) of a Markup row with a
+//             country, shared by every country. Resolved server-side on every save, so
+//             unlike the rupiah set this one IS authoritative.
 //
 // The asymmetry is not an oversight: the rupiah fee is typed by a human and has been
 // since before this table existed, while the valas fee is never typed at all.
+//
+// Before 056 the valas set was per-country and denominated in each country's own
+// currency. Sharing one set is only coherent because the fee is rupiah: a shared
+// `fee = 20` would otherwise mean 20 CNY for China and 20 JPY for Japan.
 
 export type TierFeeMode = "fixed" | "percent"
+
+/** Which bracket set (migrations 056/057). Both are denominated in RUPIAH:
+ *
+ *   rupiah — matched against the typed base cost of a no-country Markup Tier product.
+ *   valas  — matched against the DERIVED base cost (valas × kurs + freight) of a Markup
+ *            Tier product with a country. Shared by every country, which only works
+ *            because the floors and the fee are rupiah rather than each country's own
+ *            currency.
+ */
+export type TierFeeScope = "rupiah" | "valas"
+
+/** Narrow a DB value or request field to a scope. Anything unrecognised reads as
+ *  "rupiah" — the column's default, and the set that only ever suggests a value, so a
+ *  bad input cannot silently become authoritative. */
+export function toTierFeeScope(v: unknown): TierFeeScope {
+  return v === "valas" ? "valas" : "rupiah"
+}
 
 /**
  * One bracket. Accepts strings because postgres-js returns NUMERIC as a string, and
@@ -55,8 +77,7 @@ export function pickTierFeeBracket<T extends TierFeeBracketInput>(
     const value = Number(b.feeValue)
     if (!Number.isFinite(min) || !Number.isFinite(value) || value < 0) continue
     // Strict >, so the first of two equal minima wins. The
-    // UNIQUE NULLS NOT DISTINCT (country_id, min_base) constraint makes that
-    // unreachable through the app anyway.
+    // UNIQUE (scope, min_base) constraint makes that unreachable through the app anyway.
     if (base >= min && min > bestMin) {
       bestMin = min
       best = b
@@ -104,18 +125,17 @@ export function resolveRupiahTierFee(
 }
 
 /**
- * The brackets belonging to one scope, ascending: `countryId` null selects the rupiah
- * set, a number selects that country's valas set. Shared by the form's preview and
- * the Settings editor so both read the same rows the server does.
+ * The brackets belonging to one scope. Shared by the form's preview and the Settings
+ * editor so both read the same rows the server does.
+ *
+ * Order is preserved rather than sorted: the resolver picks the highest matching floor,
+ * so order never affects the result, and the rows arrive ascending from the query.
  */
-export function bracketsForScope<T extends TierFeeBracketInput & { countryId: number | null }>(
+export function bracketsForScope<T extends TierFeeBracketInput & { scope: TierFeeScope }>(
   brackets: readonly T[] | null | undefined,
-  countryId: number | null | undefined,
+  scope: TierFeeScope,
 ): T[] {
-  const scope = countryId ?? null
-  return (brackets ?? [])
-    .filter((b) => (b.countryId ?? null) === scope)
-    .sort((a, b) => Number(a.minBase) - Number(b.minBase))
+  return (brackets ?? []).filter((b) => b.scope === scope)
 }
 
 /**

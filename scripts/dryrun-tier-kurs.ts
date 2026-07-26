@@ -47,6 +47,9 @@ interface Row {
   valas: string | number
   kurs: string | number
   tiered_kurs: string | number | null
+  gram: number
+  cargo_per_kg: string | number
+  packing_fee: number
 }
 
 async function main() {
@@ -64,27 +67,25 @@ async function main() {
   for (const m of methods) {
     console.log(`  ${m.pricing_method.padEnd(10)} ${String(m.n).padStart(5)} rows, ${m.with_country} with a country`)
   }
-  // A country on a tier_fee row is NOT a fault — since migration 053 that is exactly
-  // what selects its valas mode. flat_fee is the only method that must never carry
-  // one: its fee is a single rupiah setting, so a country would be silently ignored.
-  const flatFeeWithCountry = methods.find((m) => m.pricing_method === "flat_fee")?.with_country ?? 0
+  // A country on a tier_fee OR flat_fee row is NOT a fault — it is exactly what selects
+  // that method's valas mode (migration 053 for tier_fee; flat_fee gained the same split
+  // when its cost became landed cost). So there is no longer a method that must never
+  // carry one, and the old flat_fee assertion has been dropped rather than inverted:
+  // both states are legal, so neither is evidence of anything.
   const [{ n: overseasNoCountry }] = (await sql`
     SELECT COUNT(*)::int AS n FROM products
      WHERE pricing_method IN ('overseas', 'tier_kurs') AND country_id IS NULL
   `) as unknown as { n: number }[]
-  let structural = 0
-  if (flatFeeWithCountry > 0) {
-    console.log(`  ❌ ${flatFeeWithCountry} Flat Fee row(s) have a country — the formula ignores it`)
-    structural++
-  }
+  const structural = 0
   if (overseasNoCountry > 0) {
     console.log(`  ⚠️  ${overseasNoCountry} overseas/tier_kurs row(s) have NO country, so they price at 0 inputs`)
   }
-  if (structural === 0) console.log("  ✅ no Flat Fee row carries a country")
+  console.log("  ✅ method assignment is consistent (a country is legal on any method now)")
 
   // ── Tier Kurs rows ───────────────────────────────────────────────────────
   const rows = (await sql`
-    SELECT id, name, store, price, country_id, pricing_method, valas, kurs, tiered_kurs
+    SELECT id, name, store, price, country_id, pricing_method, valas, kurs, tiered_kurs,
+           gram, cargo_per_kg, packing_fee
       FROM products
      WHERE pricing_method = 'tier_kurs' AND name != ''
      ORDER BY id
@@ -117,6 +118,12 @@ async function main() {
     const valas = Number(r.valas) || 0
     const kurs = Number(r.kurs) || 0
     const storedRate = r.tiered_kurs != null ? Number(r.tiered_kurs) : null
+    const gram = Number(r.gram) || 0
+    const cargoPerKg = Number(r.cargo_per_kg) || 0
+    // Part of the price since the packing charge was folded in, so it has to come from the
+    // row rather than from product_defaults, or a later change to the default would make
+    // every existing row look corrupt.
+    const packingFee = Number(r.packing_fee) || 0
 
     if (storedRate == null) {
       noRate++
@@ -125,7 +132,10 @@ async function main() {
 
     // Run the real formula, NOT a closed form: it has to stay right when the
     // rounding step changes.
-    const own = Math.round(calcTierKursPrice({ valas, tieredKurs: storedRate, kurs, roundTo }).price)
+    // gram and cargo_per_kg do not move the price — it is valas × the charged rate —
+    // but they are part of cogs since freight is booked into cost, so pass the row's
+    // own values rather than zeros.
+    const own = Math.round(calcTierKursPrice({ valas, tieredKurs: storedRate, kurs, roundTo, gram, cargoPerKg, packingFee }).price)
     if (own !== (r.price ?? 0)) {
       priceMismatch++
       console.log(`  ❌ #${r.id} ${r.name.slice(0, 34)} stored ${rp(r.price)} but its own inputs give ${rp(own)}`)
@@ -137,7 +147,7 @@ async function main() {
       kurs,
     )
     if (Math.abs(live - storedRate) > EPSILON) {
-      const nowPrice = Math.round(calcTierKursPrice({ valas, tieredKurs: live, kurs, roundTo }).price)
+      const nowPrice = Math.round(calcTierKursPrice({ valas, tieredKurs: live, kurs, roundTo, gram, cargoPerKg, packingFee }).price)
       stale.push({ r, storedRate, liveRate: live, nowPrice })
     }
   }

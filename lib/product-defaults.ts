@@ -24,6 +24,19 @@ export interface ProductDefaults {
    * number, so changing it reprices them all on their next save.
    */
   flatFee: number
+  /**
+   * The percentage of base cost charged when a Flat Fee row is in percent mode
+   * (migration 054). Same authority as flatFee — server-resolved at save time — so
+   * changing it reprices every percent-mode Flat Fee product on its next save.
+   */
+  flatFeePct: number
+  /**
+   * A floor under the percent-mode Flat Fee (migration 055). 0 means no floor.
+   *
+   * Percent mode only: a minimum under a fixed amount would either do nothing or replace
+   * the owner's chosen fee with a different constant.
+   */
+  flatFeeMin: number
 }
 
 export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
@@ -35,4 +48,9 @@ export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
   tierKursRoundTo: 5000,
   // The owner's starting value, not a derived one. Editable in Settings.
   flatFee: 10_000,
+  // 0 until the owner sets one: a percent-mode row then prices at cost, which is visible
+  // in the profit readout rather than silently applying a rate nobody chose.
+  flatFeePct: 0,
+  // Inert until set: MAX(fee, 0) is fee.
+  flatFeeMin: 0,
 }

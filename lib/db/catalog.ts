@@ -4,10 +4,12 @@ import type { DBExecutor } from "./actor"
 import type {
   ProductRow, ProductIndoRow, CountryRow, WarehouseRow, KursTierRow, TierFeeBracketRow,
 } from "./types"
-import { toPricingMethod, type PricingMethod } from "@/lib/pricing"
+import { toFlatFeeMode, toPricingMethod, type FlatFeeMode, type PricingMethod } from "@/lib/pricing"
 import type { KursTierInput } from "@/lib/kurs-tiers"
 import type { TierFeeBracketInput } from "@/lib/tier-fee"
-import { toTierFeeMode, type TierFeeMode } from "@/lib/tier-fee"
+import {
+  toTierFeeMode, toTierFeeScope, type TierFeeMode, type TierFeeScope,
+} from "@/lib/tier-fee"
 
 // ─── Products Indo ──────────────────────────────────────────────────────────
 
@@ -59,8 +61,8 @@ export async function getProducts(): Promise<ProductRow[]> {
     SELECT p.id, p.name, p.store, p.price, p.gram,
            p.country_id, COALESCE(c.name, '') AS country_name,
            COALESCE(c.currency, '') AS country_currency,
-           p.valas, p.kurs, p.tiered_kurs, p.fee_valas, p.cargo_per_kg, p.profit_pct,
-           p.pricing_method,
+           p.valas, p.kurs, p.tiered_kurs, p.cargo_per_kg, p.profit_pct,
+           p.pricing_method, p.flat_fee_mode,
            p.operational_fee, p.packing_fee, p.cost, p.profit_fixed,
            p.is_active, p.created_at, p.updated_at
     FROM products p
@@ -81,9 +83,8 @@ export async function getProducts(): Promise<ProductRow[]> {
     // NOT `|| 0`: null means "not priced on a tiered rate", which a 0 could not be
     // told apart from.
     tieredKurs: r.tiered_kurs != null ? Number(r.tiered_kurs) : null,
-    // NOT `|| 0`: null means "not priced on a valas fee".
-    feeValas: r.fee_valas != null ? Number(r.fee_valas) : null,
     pricingMethod: toPricingMethod(r.pricing_method),
+    flatFeeMode: toFlatFeeMode(r.flat_fee_mode),
     // kurs is NUMERIC(12,4) — postgres-js returns it as a string, so coerce.
     kurs: Number(r.kurs) || 0,
     cargoPerKg: r.cargo_per_kg ?? 0,
@@ -113,9 +114,8 @@ function mapProductRow(r: Record<string, unknown>): ProductRow {
     // NOT `|| 0`: null means "not priced on a tiered rate", which a 0 could not be
     // told apart from.
     tieredKurs: r.tiered_kurs != null ? Number(r.tiered_kurs) : null,
-    // NOT `|| 0`: null means "not priced on a valas fee".
-    feeValas: r.fee_valas != null ? Number(r.fee_valas) : null,
     pricingMethod: toPricingMethod(r.pricing_method),
+    flatFeeMode: toFlatFeeMode(r.flat_fee_mode),
     // kurs is NUMERIC(12,4) — postgres-js returns it as a string, so coerce.
     kurs: Number(r.kurs) || 0,
     cargoPerKg: (r.cargo_per_kg as number) ?? 0,
@@ -200,18 +200,26 @@ export async function getProductsPaginated(opts: {
     // "Overseas" rows have a country; "Domestic" rows don't.
     // Keys on pricing_method, not country_id: a Tier Kurs product HAS a country,
     // so the old `country_id IS NOT NULL` test would file it under Overseas.
-    // Ordered most-distinctive first, because the labels overlap: "Flat Fee" and
-    // "Tier Fee" share "fee", "Tier Fee" and "Tier Kurs" share "tier". Only "flat"
-    // and "kurs" are unique to one method, so both are tested before "fee".
+    // Ordered most-distinctive first, because the labels overlap. "Flat" and "kurs" are
+    // unique to one method each, so they go first. "markup" is tier_fee's label since it
+    // was renamed from "Tier Fee"; "mark" is enough to match it and cannot be confused
+    // with "margin", which has no "k".
+    //
+    // Anything matching more than one method narrows to those rather than falling through:
+    // an unmatched filter adds no condition at all and returns EVERY row, which reads as
+    // "the filter did nothing" — worse than an imprecise answer.
     if (t.includes("flat")) conditions.push("p.pricing_method = 'flat_fee'")
     else if (t.includes("kurs")) conditions.push("p.pricing_method = 'tier_kurs'")
-    else if (t.includes("fee")) conditions.push("p.pricing_method = 'tier_fee'")
+    else if (t.includes("mark")) conditions.push("p.pricing_method = 'tier_fee'")
     else if (t.includes("over") || t.includes("abroad") || t.includes("margin")) {
       conditions.push("p.pricing_method = 'overseas'")
     }
-    // "tier" alone is ambiguous between the two Tier methods. Narrow to both rather
-    // than falling through, which would silently ignore the filter and return every
-    // row — worse than an imprecise answer.
+    // "fee" now describes both fee-based methods — Flat Fee still carries it in its label,
+    // and tier_fee is the method the Fee toggle sits inside.
+    else if (t.includes("fee")) {
+      conditions.push("p.pricing_method IN ('tier_fee', 'flat_fee')")
+    }
+    // "tier" is ambiguous between tier_fee and tier_kurs.
     else if (t.includes("tier")) {
       conditions.push("p.pricing_method IN ('tier_fee', 'tier_kurs')")
     }
@@ -227,7 +235,7 @@ export async function getProductsPaginated(opts: {
   const SORT_COLUMNS: Record<string, string> = {
     id: "p.id", name: "p.name", store: "p.store", price: "p.price",
     type: "p.pricing_method", countryName: "c.name", valas: "p.valas",
-    gram: "p.gram", kurs: "p.kurs", tieredKurs: "p.tiered_kurs", feeValas: "p.fee_valas",
+    gram: "p.gram", kurs: "p.kurs", tieredKurs: "p.tiered_kurs",
     cargoPerKg: "p.cargo_per_kg",
     profitPct: "p.profit_pct", operationalFee: "p.operational_fee",
     packingFee: "p.packing_fee", cost: "p.cost", profitFixed: "p.profit_fixed",
@@ -240,8 +248,8 @@ export async function getProductsPaginated(opts: {
     `SELECT p.id, p.name, p.store, p.price, p.gram,
             p.country_id, COALESCE(c.name, '') AS country_name,
             COALESCE(c.currency, '') AS country_currency,
-            p.valas, p.kurs, p.tiered_kurs, p.fee_valas, p.cargo_per_kg, p.profit_pct,
-            p.pricing_method,
+            p.valas, p.kurs, p.tiered_kurs, p.cargo_per_kg, p.profit_pct,
+            p.pricing_method, p.flat_fee_mode,
             p.operational_fee, p.packing_fee, p.cost, p.profit_fixed,
             p.is_active, p.created_at, p.updated_at
      FROM products p
@@ -293,9 +301,9 @@ export async function addProduct(data: {
   valas: number
   kurs: number
   tieredKurs: number | null
-  feeValas: number | null
   cargoPerKg: number
   pricingMethod: PricingMethod
+  flatFeeMode: FlatFeeMode
   profitPct: number
   operationalFee: number
   packingFee: number
@@ -304,12 +312,13 @@ export async function addProduct(data: {
 }, db: DBExecutor = sql): Promise<{ id: number }> {
   const [row] = await db`
     INSERT INTO products (name, store, price, gram, country_id, valas, kurs,
-      tiered_kurs, fee_valas, cargo_per_kg, profit_pct, operational_fee, packing_fee, cost,
-      profit_fixed, pricing_method)
+      tiered_kurs, cargo_per_kg, profit_pct, operational_fee, packing_fee, cost,
+      profit_fixed, pricing_method, flat_fee_mode)
     VALUES (${data.name}, ${data.store}, ${data.price}, ${data.gram},
-      ${data.countryId}, ${data.valas}, ${data.kurs}, ${data.tieredKurs}, ${data.feeValas},
+      ${data.countryId}, ${data.valas}, ${data.kurs}, ${data.tieredKurs},
       ${data.cargoPerKg}, ${data.profitPct}, ${data.operationalFee},
-      ${data.packingFee}, ${data.cost}, ${data.profitFixed}, ${data.pricingMethod})
+      ${data.packingFee}, ${data.cost}, ${data.profitFixed}, ${data.pricingMethod},
+      ${data.flatFeeMode})
     RETURNING id
   `
   return { id: row.id }
@@ -326,9 +335,9 @@ export async function updateProduct(
     valas: number
     kurs: number
     tieredKurs: number | null
-  feeValas: number | null
     cargoPerKg: number
     pricingMethod: PricingMethod
+    flatFeeMode: FlatFeeMode
     profitPct: number
     operationalFee: number
     packingFee: number
@@ -342,12 +351,13 @@ export async function updateProduct(
     SET name = ${data.name}, store = ${data.store}, price = ${data.price},
         gram = ${data.gram}, country_id = ${data.countryId},
         valas = ${data.valas}, kurs = ${data.kurs},
-        tiered_kurs = ${data.tieredKurs}, fee_valas = ${data.feeValas},
+        tiered_kurs = ${data.tieredKurs},
         cargo_per_kg = ${data.cargoPerKg},
         profit_pct = ${data.profitPct}, operational_fee = ${data.operationalFee},
         packing_fee = ${data.packingFee}, cost = ${data.cost},
         profit_fixed = ${data.profitFixed},
-        pricing_method = ${data.pricingMethod}, updated_at = NOW()
+        pricing_method = ${data.pricingMethod},
+        flat_fee_mode = ${data.flatFeeMode}, updated_at = NOW()
     WHERE id = ${id}
   `
 }
@@ -413,18 +423,33 @@ export async function getTierKursInputs(
   }
 }
 
+
 /**
- * The Flat Fee method's single fee. Read inside the write transaction rather than
- * from the cached settings route, for the same reason the kurs brackets are: this
- * is the number the stored price is built from, so a stale read would persist a
- * wrong price rather than merely show one.
+ * Every Flat Fee setting in one round trip: the fixed amount, the percentage, and the floor
+ * under the percentage — whichever mode the row being saved is in (migrations 054, 055).
  *
- * NOT `|| 10000` on the coercion: 0 is a legal fee.
+ * Takes a DBExecutor and is read inside the write transaction rather than from the cached
+ * settings route, for the same reason the brackets are: these are the numbers the stored
+ * price is built from, so a stale read would persist a wrong price rather than merely
+ * show one.
+ *
+ * NOT `|| 10000` etc. on the coercions: 0 is legal for all three, and means price at cost /
+ * no percentage / no floor.
  */
-export async function getFlatFee(db: DBExecutor = sql): Promise<number> {
-  const [row] = await db`SELECT flat_fee FROM product_defaults WHERE id = 1`
+export async function getFlatFeeSettings(
+  db: DBExecutor = sql,
+): Promise<{ flatFee: number; flatFeePct: number; flatFeeMin: number }> {
+  const [row] = await db`
+    SELECT flat_fee, flat_fee_pct, flat_fee_min FROM product_defaults WHERE id = 1
+  `
   const fee = Number(row?.flat_fee)
-  return Number.isFinite(fee) && fee >= 0 ? fee : 0
+  const pct = Number(row?.flat_fee_pct)
+  const min = Number(row?.flat_fee_min)
+  return {
+    flatFee: Number.isFinite(fee) && fee >= 0 ? fee : 0,
+    flatFeePct: Number.isFinite(pct) && pct >= 0 ? pct : 0,
+    flatFeeMin: Number.isFinite(min) && min >= 0 ? min : 0,
+  }
 }
 
 /**
@@ -438,20 +463,25 @@ export async function getProductPricingContext(
   db: DBExecutor = sql,
 ): Promise<{
   pricingMethod: PricingMethod
+  flatFeeMode: FlatFeeMode
   price: number
   tieredKurs: number | null
-  feeValas: number | null
+  /** The fee the stored price was built from. Needed so that a save which KEEPS the price
+   *  (the Sheets-import guard in computeProductPrice) keeps the fee that goes with it,
+   *  rather than storing one resolved from a base cost of zero. */
+  profitFixed: number
   countryId: number | null
 }> {
   const [row] = await db`
-    SELECT pricing_method, price, tiered_kurs, fee_valas, country_id
+    SELECT pricing_method, flat_fee_mode, price, tiered_kurs, profit_fixed, country_id
     FROM products WHERE id = ${id}
   `
   return {
     pricingMethod: toPricingMethod(row?.pricing_method),
+    flatFeeMode: toFlatFeeMode(row?.flat_fee_mode),
     price: (row?.price as number | undefined) ?? 0,
     tieredKurs: row?.tiered_kurs != null ? Number(row.tiered_kurs) : null,
-    feeValas: row?.fee_valas != null ? Number(row.fee_valas) : null,
+    profitFixed: (row?.profit_fixed as number | undefined) ?? 0,
     countryId: (row?.country_id as number | null) ?? null,
   }
 }
@@ -494,19 +524,22 @@ export async function replaceKursTiers(
 
 // ─── Tier Fee brackets ─────────────────────────────────────────────────────
 //
-// Brackets mapping a Tier Fee product's base amount to its fee. Resolution lives
-// in lib/tier-fee.ts. Two scopes (migration 053):
+// Brackets mapping a Markup Tier product's base cost to its fee. Resolution lives in
+// lib/tier-fee.ts. Two scopes, both in RUPIAH (migrations 056/057):
 //
-//   country_id IS NULL — the rupiah set, a FORM DEFAULT only. No server recompute.
-//   country_id = N     — that country's valas set, which IS authoritative and is
-//                        re-resolved inside the write transaction by
-//                        getTierFeeValasInputs() below.
+//   'rupiah' — matched against the typed base cost. A FORM DEFAULT only; the user can
+//              type over the suggested fee and nothing recomputes it.
+//   'valas'  — matched against the DERIVED base cost (valas × kurs + freight), and shared
+//              by every country. Authoritative: re-resolved inside the write transaction
+//              by getTierFeeValasInputs() below.
+//
+// One set for all countries rather than one per country, because the floors and the fee
+// are rupiah: a shared `fee = 20` could not mean anything sensible for CNY and JPY at once.
 
 function mapTierFeeBracketRow(r: Record<string, unknown>): TierFeeBracketRow {
   return {
     id: r.id as number,
-    // NOT `|| 0`: null is the rupiah scope, and 0 is a real country id nobody has.
-    countryId: r.country_id != null ? Number(r.country_id) : null,
+    scope: toTierFeeScope(r.scope),
     minBase: Number(r.min_base) || 0,
     feeMode: toTierFeeMode(r.fee_mode),
     // fee_value is NUMERIC(12,2), which postgres-js returns as a string.
@@ -516,20 +549,22 @@ function mapTierFeeBracketRow(r: Record<string, unknown>): TierFeeBracketRow {
   }
 }
 
-/** Every scope's brackets. One fetch serves the Settings editor and both product
- *  forms, which filter with bracketsForScope(). */
+/** Both scopes' brackets. One fetch serves the Settings editor and both product forms,
+ *  which filter with bracketsForScope(). */
 export async function getTierFeeBrackets(): Promise<TierFeeBracketRow[]> {
   const rows = await sql`
-    SELECT id, country_id, min_base, fee_mode, fee_value, created_at, updated_at
+    SELECT id, scope, min_base, fee_mode, fee_value, created_at, updated_at
     FROM tier_fee_brackets
-    ORDER BY country_id NULLS FIRST, min_base
+    ORDER BY scope, min_base
   `
   return rows.map(mapTierFeeBracketRow)
 }
 
 /**
- * Everything the server needs to price a valas-mode Tier Fee product, in one round
- * trip: the country's brackets and the shared rounding step.
+ * Everything the server needs to price a valas-mode Markup Tier product, in one round
+ * trip: the shared valas brackets and the rounding step.
+ *
+ * No country parameter since migrations 056/057 — every country uses the same set.
  *
  * Brackets come back as TierFeeBracketInput, deliberately NOT TierFeeBracketRow:
  * json_agg would hand back ISO date strings where tsToString() expects a Date, and
@@ -539,7 +574,6 @@ export async function getTierFeeBrackets(): Promise<TierFeeBracketRow[]> {
  * Takes a DBExecutor so it runs inside the same transaction as the write.
  */
 export async function getTierFeeValasInputs(
-  countryId: number | null,
   db: DBExecutor = sql,
 ): Promise<{ brackets: TierFeeBracketInput[]; roundTo: number }> {
   const [row] = await db`
@@ -548,7 +582,7 @@ export async function getTierFeeValasInputs(
                       'minBase', b.min_base, 'feeMode', b.fee_mode, 'feeValue', b.fee_value)
                     ORDER BY b.min_base)
                FROM tier_fee_brackets b
-              WHERE b.country_id = ${countryId}
+              WHERE b.scope = 'valas'
            ), '[]'::json) AS brackets,
            (SELECT tier_kurs_round_to FROM product_defaults WHERE id = 1) AS round_to
   `
@@ -559,17 +593,17 @@ export async function getTierFeeValasInputs(
 }
 
 /**
- * Replace one scope's whole bracket set — `countryId` null for the rupiah set.
+ * Replace one scope's whole bracket set.
  *
  * Upsert-then-prune for the same reasons as replaceKursTiers: ids and created_at
  * survive an edit, and the audit log shows a per-bracket diff rather than N DELETEs
  * plus M INSERTs on every save.
  *
  * An empty `brackets` clears that scope, which is legitimate: for rupiah it means
- * "stop suggesting a fee", for a country it means "price at cost".
+ * "stop suggesting a fee", for valas it means "price at cost".
  */
 export async function replaceTierFeeBrackets(
-  countryId: number | null,
+  scope: TierFeeScope,
   brackets: { minBase: number; feeMode: TierFeeMode; feeValue: number }[],
   db: DBExecutor = sql,
 ): Promise<void> {
@@ -579,21 +613,21 @@ export async function replaceTierFeeBrackets(
 
   if (brackets.length > 0) {
     await db`
-      INSERT INTO tier_fee_brackets (country_id, min_base, fee_mode, fee_value, updated_at)
-      SELECT ${countryId}, data.min_base, data.fee_mode, data.fee_value, NOW()
+      INSERT INTO tier_fee_brackets (scope, min_base, fee_mode, fee_value, updated_at)
+      SELECT ${scope}, data.min_base, data.fee_mode, data.fee_value, NOW()
         FROM unnest(${mins}::numeric[], ${modes}::text[], ${values}::numeric[])
           AS data(min_base, fee_mode, fee_value)
-      ON CONFLICT (country_id, min_base)
+      ON CONFLICT (scope, min_base)
       DO UPDATE SET fee_mode  = EXCLUDED.fee_mode,
                     fee_value = EXCLUDED.fee_value,
                     updated_at = NOW()
     `
   }
-  // `IS NOT DISTINCT FROM` rather than `=`: the rupiah scope is NULL, and `= NULL`
-  // matches nothing, so the prune would silently never delete a rupiah bracket.
+  // A plain `=` is right now that the scope is a non-null TEXT: the NULL-safe comparison
+  // the country version needed is gone with country_id.
   await db`
     DELETE FROM tier_fee_brackets
-     WHERE country_id IS NOT DISTINCT FROM ${countryId}
+     WHERE scope = ${scope}
        AND min_base <> ALL(${mins}::numeric[])
   `
 }

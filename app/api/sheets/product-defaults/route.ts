@@ -34,6 +34,8 @@ export async function PATCH(req: NextRequest) {
     const markupPct = Number(body.markupPct)
     const tierKursRoundTo = Number(body.tierKursRoundTo)
     const flatFee = Number(body.flatFee)
+    const flatFeePct = Number(body.flatFeePct)
+    const flatFeeMin = Number(body.flatFeeMin)
 
     if (!Number.isFinite(profitPct) || !Number.isFinite(operationalFee) || !Number.isFinite(packingFee) || !Number.isFinite(markupPct)) {
       return NextResponse.json({ error: "profitPct, operationalFee, packingFee and markupPct must be numbers" }, { status: 400 })
@@ -44,6 +46,16 @@ export async function PATCH(req: NextRequest) {
     if (!Number.isInteger(flatFee) || flatFee < 0) {
       return NextResponse.json({ error: "flatFee must be a whole number of 0 or more" }, { status: 400 })
     }
+    // A price input too, but NUMERIC rather than INTEGER, so fractional rates like 4,5%
+    // are legal. Bounded 0-100 to match the DB's CHECK, and returns a readable 400 rather
+    // than letting Postgres raise one.
+    if (!Number.isFinite(flatFeePct) || flatFeePct < 0 || flatFeePct > 100) {
+      return NextResponse.json({ error: "flatFeePct must be a number between 0 and 100" }, { status: 400 })
+    }
+    // Lands in an INTEGER column with a CHECK (>= 0). 0 is legal and means no floor.
+    if (!Number.isInteger(flatFeeMin) || flatFeeMin < 0) {
+      return NextResponse.json({ error: "flatFeeMin must be a whole number of 0 or more" }, { status: 400 })
+    }
     // Guarded separately: it divides in ceilTo(), and a 0 or negative step would
     // be a runtime hazard rather than just a bad default. The DB has a matching
     // CHECK (>= 1); this returns a readable 400 instead of a 500.
@@ -52,7 +64,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     await withActor(session.user.email, (tx) =>
-      updateProductDefaults({ profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo, flatFee }, tx),
+      updateProductDefaults({ profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo, flatFee, flatFeePct, flatFeeMin }, tx),
     )
     invalidate("product-defaults")
     return NextResponse.json({ ok: true })

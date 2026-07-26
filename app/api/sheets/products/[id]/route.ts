@@ -4,7 +4,7 @@ import {
   updateProduct, deleteProduct, setProductActive, getProductPricingContext, withActor,
 } from "@/lib/db"
 import { computeProductPrice } from "@/lib/pricing-server"
-import { toPricingMethod } from "@/lib/pricing"
+import { toFlatFeeMode, toPricingMethod } from "@/lib/pricing"
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -67,6 +67,12 @@ export async function PUT(req: NextRequest, { params }: Params) {
         body.pricingMethod === undefined
           ? current.pricingMethod
           : toPricingMethod(body.pricingMethod)
+      // Same keep-if-absent rule as pricingMethod: a caller that rebuilds the row to change
+      // one field must not silently flip a percent-mode Flat Fee row back to fixed.
+      const flatFeeMode =
+        body.flatFeeMode === undefined
+          ? current.flatFeeMode
+          : toFlatFeeMode(body.flatFeeMode)
       const countryId =
         body.countryId === undefined
           ? current.countryId
@@ -76,10 +82,11 @@ export async function PUT(req: NextRequest, { params }: Params) {
 
       const priced = await computeProductPrice({
         pricingMethod,
+        flatFeeMode,
         countryId,
         body,
         db: tx,
-        current: { price: current.price, tieredKurs: current.tieredKurs },
+        current: { price: current.price, tieredKurs: current.tieredKurs, profitFixed: current.profitFixed },
       })
 
       return updateProduct(id, {
@@ -94,15 +101,20 @@ export async function PUT(req: NextRequest, { params }: Params) {
         valas: Number(body.valas) || 0,
         kurs: Number(body.kurs) || 0,
         tieredKurs: priced.tieredKurs,
-        feeValas: priced.feeValas,
         cargoPerKg: Number(body.cargoPerKg) || 0,
         profitPct: Number(body.profitPct) || 0,
         operationalFee: Number(body.operationalFee ?? 5000),
         packingFee: Number(body.packingFee ?? 5000),
-        cost: Number(body.cost) || 0,
+        // priced.cost is non-null only for the two valas fee modes, where cost is landed
+        // cost rather than a typed figure and the server resolves it.
+        //
+        // `|| 0` inside the parens rather than a third `??` — see the POST handler: NaN is
+        // neither null nor undefined, so `??` would let it through to an INTEGER column.
+        cost: priced.cost ?? (Number(body.cost) || 0),
         // Server-resolved for flat_fee, the body's own value otherwise.
         profitFixed: priced.profitFixed ?? (Number(body.profitFixed) || 0),
         pricingMethod,
+        flatFeeMode,
       }, tx)
     })
 

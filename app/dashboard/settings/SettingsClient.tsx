@@ -463,6 +463,36 @@ function ProductDefaultsSection() {
               product&apos;s next save.
             </span>
           </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Flat Fee %</span>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="0.01"
+              value={defaults.flatFeePct}
+              onChange={(e) => field("flatFeePct", e.target.value)}
+              className={fieldInputCls}
+            />
+            <span className="text-[10px] text-gray-400">
+              Used instead of the amount above by Flat Fee products with Percent switched
+              on. Applies on a product&apos;s next save.
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Flat Fee minimum</span>
+            <input
+              type="number"
+              min="0"
+              value={defaults.flatFeeMin}
+              onChange={(e) => field("flatFeeMin", e.target.value)}
+              className={fieldInputCls}
+            />
+            <span className="text-[10px] text-gray-400">
+              Floor under the percentage above, for when a small base would earn less than
+              the work costs. 0 = no floor. Percent mode only.
+            </span>
+          </label>
         </div>
       )}
     </div>

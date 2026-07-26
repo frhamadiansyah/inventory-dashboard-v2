@@ -1,15 +1,17 @@
 "use client"
 
-// Shows which Tier Fee bracket the typed base amount lands in, and what the other
-// brackets would charge — so the fee isn't a number with no explanation.
+// Shows which Markup Tier bracket a base cost lands in, and what the other brackets would
+// charge — so the fee isn't a number with no explanation.
 //
-// Serves both of the method's modes, because they are one concept with two units:
+// Serves both scopes, which since migrations 056/057 are one concept in ONE unit: both sets
+// are rupiah, and both are matched against a rupiah base cost. What differs is only where
+// that base cost comes from and what happens after the fee is added:
 //
-//   rupiah mode — `unit` is "Rp", `entered` is the typed fee, and the panel calls out
-//                 an override, since the field is only ever pre-filled.
-//   valas mode  — `unit` is the country's currency and `conversion` is supplied, so
-//                 the panel also shows the fee being converted and rounded into a
-//                 rupiah price. Nothing is overridable there: the server resolves it.
+//   rupiah scope — base is the typed cost, `entered` is the typed fee, and the panel calls
+//                  out an override, since the field is only ever pre-filled.
+//   valas scope  — base is the DERIVED cost (valas × rate + freight) and `rounding` is
+//                  supplied, so the panel shows the total being rounded up to the price.
+//                  Nothing is overridable there: the server resolves it.
 //
 // Panel chrome and positioning come from InfoPopover.
 
@@ -26,7 +28,7 @@ export default function TierFeePopover({
   brackets,
   unit,
   entered,
-  conversion,
+  rounding,
   disabled,
 }: {
   /** The base amount to resolve: a rupiah cost, or a valas amount. */
@@ -37,8 +39,9 @@ export default function TierFeePopover({
   unit: string
   /** Rupiah mode only: what is currently in the Fee field, so an override shows. */
   entered?: number
-  /** Valas mode only. Absent means no conversion is applied. */
-  conversion?: { kurs: number; roundTo: number; countryName: string }
+  /** Valas scope only: the step the fee-plus-cost total is rounded up to. Absent means the
+   *  total is exact, which is what the rupiah scope does. */
+  rounding?: number
   disabled?: boolean
 }) {
   const active = pickTierFeeBracket(brackets ?? [], base)
@@ -46,25 +49,25 @@ export default function TierFeePopover({
   const sorted = [...(brackets ?? [])].sort((a, b) => a.minBase - b.minBase)
   const overridden = entered != null && Math.round(entered) !== Math.round(fee)
 
-  const raw = conversion ? (base + fee) * conversion.kurs : 0
-  const price = conversion ? ceilTo(raw, conversion.roundTo) : base + fee
+  const raw = base + fee
+  const price = rounding ? ceilTo(raw, rounding) : raw
 
   return (
     <InfoPopover
       ariaLabel="Show Tier Fee brackets"
       disabled={disabled}
-      width={conversion ? 320 : 300}
+      width={rounding ? 320 : 300}
     >
       <p className="text-xs font-semibold text-foreground">
-        Tier Fee brackets{conversion ? ` — ${conversion.countryName}` : ""}
+        Markup Tier brackets — {rounding ? "valas" : "rupiah"}
       </p>
 
       {brackets == null ? (
         <p className="text-xs text-gray-500">Loading…</p>
       ) : sorted.length === 0 ? (
-        <p className={`text-xs ${conversion ? "text-amber-700" : "text-gray-500"}`}>
-          {conversion
-            ? `No brackets for ${conversion.countryName}, so the fee is 0 and this product is priced at cost.`
+        <p className={`text-xs ${rounding ? "text-amber-700" : "text-gray-500"}`}>
+          {rounding
+            ? "No brackets, so the fee is 0 and this product is priced at cost."
             : "No brackets set, so nothing is suggested."}
           {" Add them under Settings → Pricing."}
         </p>
@@ -95,14 +98,16 @@ export default function TierFeePopover({
       )}
 
       <div className="border-t border-cream-border pt-2 flex flex-col gap-1">
-        {conversion ? (
+        {rounding ? (
           <>
             <p className="text-xs text-gray-500 tabular-nums">
-              ({fmt2(base)} + fee <span className="font-semibold text-foreground">{fmt2(fee)}</span>)
-              {` × ${fmt(conversion.kurs)} = Rp ${fmt(Math.round(raw))}`}
+              Base cost <span className="font-semibold text-foreground">Rp {fmt(Math.round(base))}</span>
+              {" + fee "}
+              <span className="font-semibold text-foreground">Rp {fmt(Math.round(fee))}</span>
+              {` = Rp ${fmt(Math.round(raw))}`}
             </p>
             <p className="text-xs text-gray-500 tabular-nums">
-              rounded up to {fmt(conversion.roundTo)} → price{" "}
+              rounded up to {fmt(rounding)} → price{" "}
               <span className="font-semibold text-foreground">Rp {fmt(Math.round(price))}</span>
             </p>
             {/* The round-up lands in profit, not cost, so a small base can show a
@@ -135,7 +140,7 @@ export default function TierFeePopover({
       </div>
 
       <p className="text-[10px] text-gray-400">
-        {conversion ? (
+        {rounding ? (
           <>
             Brackets are edited under Settings → Pricing and the rounding step under
             Product defaults. Both are read when the product is saved.

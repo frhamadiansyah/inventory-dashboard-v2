@@ -3,8 +3,8 @@
 // Editor for the Tier Fee brackets: from which base amount upward to charge which
 // fee.
 //
-// One expandable row per scope — Rupiah first, then every country — because a Tier
-// Fee product is priced in rupiah when it has no country and in that country's
+// One expandable row per scope — Rupiah, then Valas. Both sets are rupiah (migrations
+// 056/057); the difference is which base cost they are matched against, and the Valas
 // currency when it has one, and each of those needs its own bracket set. Same shape
 // as KursTiersSection, and for the same reason: the collapsed header answers "which
 // scopes are configured" without any clicking, and each scope keeps its own draft and
@@ -16,6 +16,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useTierFeeBrackets } from "@/hooks/useTierFeeBrackets"
+import type { TierFeeScope } from "@/lib/tier-fee"
 import {
   DEFAULT_RUPIAH_TIER_FEE_BRACKETS,
   bracketsForScope,
@@ -49,20 +50,10 @@ const toDraft = (b: { minBase: number; feeMode: TierFeeMode; feeValue: number })
 export default function TierFeeBracketsSection() {
   const { brackets, loading, error, reload } = useTierFeeBrackets()
   const productDefaults = useProductDefaults()
-  const [countries, setCountries] = useState<CountryRow[]>([])
-  // null is a real key here — the rupiah scope — so this is a Set of `number | null`,
-  // not a Set of number with a sentinel.
-  const [open, setOpen] = useState<Set<number | null>>(new Set([null]))
+  // Two scopes, not one per country (migrations 056/057), so a plain Set of the scope names.
+  const [open, setOpen] = useState<Set<TierFeeScope>>(new Set<TierFeeScope>(["rupiah"]))
 
-  // /api/sheets/countries returns { rows }, not { countries }.
-  useEffect(() => {
-    fetch("/api/sheets/countries", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((j) => setCountries((j.rows ?? []) as CountryRow[]))
-      .catch(() => {})
-  }, [])
-
-  const toggle = (key: number | null) =>
+  const toggle = (key: TierFeeScope) =>
     setOpen((prev) => {
       const next = new Set(prev)
       if (!next.delete(key)) next.add(key)
@@ -73,36 +64,29 @@ export default function TierFeeBracketsSection() {
 
   return (
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
-      <h2 className="text-sm font-semibold text-foreground">Tier Fee brackets</h2>
+      <h2 className="text-sm font-semibold text-foreground">Markup Tier brackets</h2>
 
       <p className="text-xs text-gray-500">
-        A <span className="font-medium">Tier Fee</span> product is priced base + fee,
-        where the fee comes from the bracket its base amount falls into. Highest
-        matching minimum wins, and minimums are inclusive. A product with no country is
-        priced in rupiah; one with a country is priced in that country&apos;s currency
-        and converted at its rate.
+        A <span className="font-medium">Markup Tier</span> product is priced base cost + fee,
+        where the fee comes from the bracket its base cost falls into. Highest matching
+        minimum wins, and minimums are inclusive.{" "}
+        <span className="font-medium">Both sets are in rupiah.</span> Rupiah is matched
+        against the base cost you type; Valas is matched against the base cost derived from
+        valas × rate + freight, and is shared by every country.
       </p>
 
       {loading && <p className="text-xs text-gray-500">Loading…</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}
 
       <div className="flex flex-col gap-2">
-        <ScopeBrackets
-          country={null}
-          stored={bracketsForScope(brackets, null)}
-          roundTo={roundTo}
-          open={open.has(null)}
-          onToggle={() => toggle(null)}
-          onSaved={reload}
-        />
-        {countries.map((country) => (
+        {(["rupiah", "valas"] as const).map((scope) => (
           <ScopeBrackets
-            key={country.id}
-            country={country}
-            stored={bracketsForScope(brackets, country.id)}
+            key={scope}
+            scope={scope}
+            stored={bracketsForScope(brackets, scope)}
             roundTo={roundTo}
-            open={open.has(country.id)}
-            onToggle={() => toggle(country.id)}
+            open={open.has(scope)}
+            onToggle={() => toggle(scope)}
             onSaved={reload}
           />
         ))}
@@ -118,23 +102,23 @@ export default function TierFeeBracketsSection() {
  * is also what makes the header's "unsaved" marker meaningful.
  */
 function ScopeBrackets({
-  country,
+  scope,
   stored,
   roundTo,
   open,
   onToggle,
   onSaved,
 }: {
-  /** null = the rupiah scope. */
-  country: CountryRow | null
+  scope: TierFeeScope
   stored: TierFeeBracketRow[]
   roundTo: number
   open: boolean
   onToggle: () => void
   onSaved: () => Promise<void>
 }) {
-  const isValas = country != null
-  const unit = isValas ? country.currency : "Rp"
+  const isValas = scope === "valas"
+  // Both scopes are rupiah now, so there is no per-scope unit.
+  const unit = "Rp"
 
   const [draft, setDraft] = useState<BracketDraft[]>([])
   const [dirty, setDirty] = useState(false)
@@ -195,10 +179,14 @@ function ScopeBrackets({
   // unsaved edits and includes the configured rounding step.
   const previewBase = Number(tryBase) || 0
   const fee = resolveTierFee(draft, previewBase)
-  const rawValas = isValas ? (previewBase + fee) * country.kurs : 0
-  const preview = isValas
-    ? calcTierFeeValasPrice({ valas: previewBase, feeValas: fee, kurs: country.kurs, roundTo })
-    : { cogs: previewBase, price: calcRupiahFeePrice(previewBase, Math.round(fee)) }
+  // Both scopes are base cost + fee; only the valas scope rounds the total. Fed as a bare
+  // rupiah base — this previews what the BRACKETS do, so there is no rate or weight to
+  // convert through, and a real product's base cost also carries freight.
+  const rawTotal = previewBase + Math.round(fee)
+  const preview = {
+    cogs: previewBase,
+    price: isValas ? ceilTo(rawTotal, roundTo) : calcRupiahFeePrice(previewBase, Math.round(fee)),
+  }
 
   const summary =
     draft.length === 0 ? "no brackets" : `${draft.length} bracket${draft.length > 1 ? "s" : ""}`
@@ -212,7 +200,7 @@ function ScopeBrackets({
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          countryId: country?.id ?? null,
+          scope,
           brackets: draft.map((b) => ({
             minBase: Number(b.minBase),
             feeMode: toTierFeeMode(b.feeMode),
@@ -248,11 +236,10 @@ function ScopeBrackets({
           <polyline points="9 18 15 12 9 6" />
         </svg>
         <span className="text-sm font-medium text-foreground shrink-0">
-          {isValas ? `${country.name} (${country.currency})` : "Rupiah — no country"}
+          {isValas ? "Valas — every country" : "Rupiah — no country"}
         </span>
         {isValas && (
           <span className="text-xs text-gray-400 shrink-0 tabular-nums">
-            rate {fmt(country.kurs)}
           </span>
         )}
         <span className="flex-1" />
@@ -267,9 +254,9 @@ function ScopeBrackets({
         <p className="text-[11px] text-gray-400">
           {isValas ? (
             <>
-              Base and fee are both in {country.currency}. The fee is added to the base
-              first, then the total is converted at {country.name}&apos;s rate of{" "}
-              {fmt(country.kurs)} and rounded up to {fmt(roundTo)}.
+              Matched against the base cost derived from valas × rate + freight, so the
+              floors are rupiah like the set above. Shared by every country. The fee is added
+              to that base cost and the total rounded up to {fmt(roundTo)}.
             </>
           ) : (
             <>Base and fee are both in rupiah, and the price is exactly base + fee.</>
@@ -280,7 +267,7 @@ function ScopeBrackets({
           {draft.length === 0 && (
             <p className="text-xs text-gray-400">
               {isValas
-                ? `No brackets. Tier Fee products for ${country.name} are priced at cost, with no fee.`
+                ? "No brackets. Markup Tier products with a country are priced at cost, with no fee."
                 : "No brackets. The Fee field is left at 0 and typed in by hand."}
             </p>
           )}
@@ -384,7 +371,7 @@ function ScopeBrackets({
         <div className="rounded-lg bg-gray-50 border border-cream-border px-3 py-2 flex flex-col gap-1.5">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-medium text-gray-500">
-              Try a base {isValas ? `(${country.currency})` : "cost"}
+              Try a base cost
             </span>
             <input
               value={tryBase}
@@ -397,7 +384,7 @@ function ScopeBrackets({
             <>
               <p className="text-xs text-gray-500 tabular-nums">
                 fee <span className="font-semibold text-foreground">{unit} {fmt2(fee)}</span>
-                {` → (${fmt(previewBase)} + ${fmt2(fee)}) × ${fmt(country.kurs)} = Rp ${fmt(Math.round(rawValas))}`}
+                {` → Rp ${fmt(previewBase)} + Rp ${fmt2(fee)}, rounded up to ${fmt(roundTo)}`}
               </p>
               <p className="text-xs text-gray-500 tabular-nums">
                 rounded up to {fmt(roundTo)} → price{" "}
@@ -408,9 +395,9 @@ function ScopeBrackets({
                   Rp {fmt(Math.round(preview.price - preview.cogs))}
                 </span>
               </p>
-              {ceilTo(rawValas, roundTo) !== rawValas && (
+              {preview.price !== rawTotal && (
                 <p className="text-[10px] text-gray-400 tabular-nums">
-                  The rounding added Rp {fmt(Math.round(preview.price - rawValas))} on top of the fee.
+                  The rounding added Rp {fmt(Math.round(preview.price - rawTotal))} on top of the fee.
                 </p>
               )}
             </>

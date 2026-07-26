@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
 import { getTierFeeBrackets, replaceTierFeeBrackets, withActor } from "@/lib/db"
 import { cached, invalidate } from "@/lib/route-cache"
-import { toTierFeeMode, type TierFeeMode } from "@/lib/tier-fee"
+import { toTierFeeMode, type TierFeeMode, type TierFeeScope } from "@/lib/tier-fee"
 
 const CACHE_KEY = "tier-fee-brackets"
 
@@ -25,18 +25,15 @@ type Bracket = { minBase: number; feeMode: TierFeeMode; feeValue: number }
  */
 function readBody(
   body: Record<string, unknown>,
-): { countryId: number | null; brackets: Bracket[] } | string {
+): { scope: TierFeeScope; brackets: Bracket[] } | string {
   // null is the rupiah scope, a number is that country's valas scope. `undefined`
   // would be ambiguous between the two, so it is rejected rather than defaulted.
-  let countryId: number | null
-  if (body.countryId === null) {
-    countryId = null
-  } else if (typeof body.countryId === "number" || typeof body.countryId === "string") {
-    countryId = Number(body.countryId)
-    if (!Number.isInteger(countryId) || countryId < 1) return "Invalid countryId"
-  } else {
-    return "countryId is required (null for the Rupiah brackets)"
+  // Rejected rather than defaulted: "rupiah" is the safe-looking value, so a typo would
+  // silently edit the wrong set instead of erroring.
+  if (body.scope !== "rupiah" && body.scope !== "valas") {
+    return 'scope is required and must be "rupiah" or "valas"'
   }
+  const scope: TierFeeScope = body.scope
 
   if (!Array.isArray(body.brackets)) return "brackets must be an array"
   if (body.brackets.length > MAX_TIERS) return `At most ${MAX_TIERS} brackets`
@@ -77,7 +74,7 @@ function readBody(
   // The resolver picks the highest matching minimum, so order is irrelevant to the
   // math — sort only so the stored rows read top-to-bottom like the editor does.
   brackets.sort((a, b) => a.minBase - b.minBase)
-  return { countryId, brackets }
+  return { scope, brackets }
 }
 
 /**
@@ -102,7 +99,7 @@ export async function GET() {
 }
 
 /** Replace one scope's whole set. `brackets: []` clears that scope — a legitimate
- *  state ("suggest nothing" for rupiah, "price at cost" for a country) — so there is
+ *  state ("suggest nothing" for rupiah, "price at cost" for valas) — so there is
  *  no separate DELETE. */
 export async function PUT(req: NextRequest) {
   const { session, error: authError } = await requireSession()
@@ -117,7 +114,7 @@ export async function PUT(req: NextRequest) {
     }
 
     await withActor(session.user.email, (tx) =>
-      replaceTierFeeBrackets(parsed.countryId, parsed.brackets, tx),
+      replaceTierFeeBrackets(parsed.scope, parsed.brackets, tx),
     )
     // Enough on its own. The rupiah scope only pre-fills a form field, and the valas
     // scope is re-read uncached inside the write transaction, so no stored price

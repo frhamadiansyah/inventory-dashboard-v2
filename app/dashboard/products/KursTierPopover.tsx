@@ -20,15 +20,21 @@ const fmt = (n: number) => n.toLocaleString("id-ID")
 export default function KursTierPopover({
   country,
   valas,
+  gram,
   tiers,
+  packingFee,
   roundTo,
   disabled,
 }: {
   country: CountryRow | null | undefined
   valas: number
+  /** Shipping weight — part of cost since freight is booked into cogs. */
+  gram: number
   /** Every country's brackets; filtered here. */
   tiers: KursTierRow[]
   roundTo: number
+  /** Same packing charge the form is using, so the panel's price matches the field. */
+  packingFee: number
   disabled?: boolean
 }) {
   const forCountry = country ? tiersForCountry(tiers, country.id) : []
@@ -40,6 +46,9 @@ export default function KursTierPopover({
     valas,
     tieredKurs: charged,
     kurs: country?.kurs ?? 0,
+    gram,
+    cargoPerKg: country?.cargoPerKg ?? 0,
+    packingFee,
     roundTo,
   })
   const raw = valas * charged

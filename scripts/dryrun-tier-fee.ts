@@ -19,11 +19,10 @@ import postgres from "postgres"
 import {
   DEFAULT_RUPIAH_TIER_FEE_BRACKETS,
   bracketsForScope,
-  resolveTierFee,
   resolveRupiahTierFee,
   type TierFeeBracketInput,
 } from "../lib/tier-fee"
-import { calcTierFeeValasPrice } from "../lib/pricing"
+import { calcTierFeeValasPrice, flatFeeAmount, landedCost, toFlatFeeMode } from "../lib/pricing"
 
 if (!process.env.DATABASE_URL) {
   console.error("❌ DATABASE_URL is not set")
@@ -85,11 +84,11 @@ async function main() {
   let failed = sweep("lib/tier-fee.ts constant", DEFAULT_RUPIAH_TIER_FEE_BRACKETS) > 0
 
   // ── 2. The migration seed mirrors the constant ────────────────────────────
-  // country_id IS NULL only: these checks are all about the rupiah scope. The valas
+  // scope = 'rupiah' only: these checks are all about that set. The valas
   // scopes are checked in section 7.
   const rows = (await sql`
     SELECT min_base, fee_mode, fee_value FROM tier_fee_brackets
-     WHERE country_id IS NULL ORDER BY min_base
+     WHERE scope = 'rupiah' ORDER BY min_base
   `) as unknown as { min_base: number; fee_mode: string; fee_value: string }[]
 
   console.log(`\n── 2. The ${rows.length} rupiah bracket(s) in the database ──`)
@@ -164,16 +163,23 @@ async function main() {
   //   b. profit_fixed != the current fee — the row is intact but predates a fee
   //      change, so it will reprice on its next save. Reported, not failed.
   console.log("\n── 6. Flat Fee rows ──")
-  const [{ flat_fee: liveFeeRaw }] = (await sql`
-    SELECT flat_fee FROM product_defaults WHERE id = 1
-  `) as unknown as { flat_fee: number }[]
-  const liveFee = Number(liveFeeRaw) || 0
-  console.log(`  Current flat fee: Rp ${rp(liveFee)} (product_defaults.flat_fee)`)
+  const [defs] = (await sql`
+    SELECT flat_fee, flat_fee_pct, flat_fee_min FROM product_defaults WHERE id = 1
+  `) as unknown as { flat_fee: number; flat_fee_pct: string; flat_fee_min: number }[]
+  const liveFee = Number(defs?.flat_fee) || 0
+  const livePct = Number(defs?.flat_fee_pct) || 0
+  const liveMin = Number(defs?.flat_fee_min) || 0
+  console.log(`  Current flat fee: Rp ${rp(liveFee)} · percent mode: ${livePct}%, floor Rp ${rp(liveMin)} (product_defaults)`)
 
   const flatRows = (await sql`
-    SELECT id, name, price, cost, profit_fixed
+    SELECT id, name, price, cost, profit_fixed, country_id, valas, kurs, gram, cargo_per_kg,
+           flat_fee_mode
       FROM products WHERE pricing_method = 'flat_fee' AND name != '' ORDER BY id
-  `) as unknown as { id: number; name: string; price: number; cost: number; profit_fixed: number }[]
+  `) as unknown as {
+    id: number; name: string; price: number; cost: number; profit_fixed: number
+    country_id: number | null; valas: string; kurs: string; gram: number; cargo_per_kg: string
+    flat_fee_mode: string
+  }[]
 
   if (flatRows.length === 0) {
     console.log("  ℹ️  no products use Flat Fee yet")
@@ -181,13 +187,35 @@ async function main() {
     let broken = 0
     const staleFee: typeof flatRows = []
     for (const r of flatRows) {
+      // With a country, cost is DERIVED — landed cost from the row's own snapshots — so
+      // check it reproduces rather than trusting the stored figure. Without one it is
+      // typed, and there is nothing to reproduce it from.
+      if (r.country_id != null) {
+        const landed = Math.round(landedCost({
+          valas: Number(r.valas) || 0,
+          kurs: Number(r.kurs) || 0,
+          gram: Number(r.gram) || 0,
+          cargoPerKg: Number(r.cargo_per_kg) || 0,
+        }))
+        if (landed !== Number(r.cost)) {
+          broken++
+          failed = true
+          console.log(`  ❌ #${r.id} ${r.name.slice(0, 34)} stored cost ${rp(r.cost)} but its own valas/rate/freight give ${rp(landed)}`)
+        }
+      }
       const own = Number(r.cost) + Number(r.profit_fixed)
       if (own !== Number(r.price)) {
         broken++
         failed = true
         console.log(`  ❌ #${r.id} ${r.name.slice(0, 34)} stored ${rp(r.price)} but cost + fee = ${rp(own)}`)
       }
-      if (Number(r.profit_fixed) !== liveFee) staleFee.push(r)
+      // The fee a row SHOULD carry depends on its mode: the fixed amount, or the live
+      // percentage of its own stored cost (migration 054). Comparing every row against the
+      // fixed amount would report every percent-mode row as stale.
+      const wantFee = flatFeeAmount(
+        toFlatFeeMode(r.flat_fee_mode), Number(r.cost) || 0, liveFee, livePct, liveMin,
+      )
+      if (Number(r.profit_fixed) !== wantFee) staleFee.push(r)
     }
     if (broken === 0) {
       console.log(`  ✅ price: all ${flatRows.length} row(s) equal cost + their own stored fee`)
@@ -213,51 +241,50 @@ async function main() {
   const [defaults] = await sql`SELECT tier_kurs_round_to FROM product_defaults WHERE id = 1`
   const roundTo = Number(defaults?.tier_kurs_round_to) || 5000
 
-  const valasBrackets = (await sql`
-    SELECT country_id, min_base, fee_mode, fee_value FROM tier_fee_brackets
-     WHERE country_id IS NOT NULL
-  `) as unknown as { country_id: number; min_base: string; fee_mode: string; fee_value: string }[]
-  const byCountry = new Map<number, TierFeeBracketInput[]>()
-  for (const b of valasBrackets) {
-    const list = byCountry.get(b.country_id) ?? []
-    list.push({ minBase: b.min_base, feeMode: b.fee_mode, feeValue: b.fee_value })
-    byCountry.set(b.country_id, list)
-  }
+  // One set for every country since migrations 056/057, and denominated in rupiah, so there
+  // is nothing to group by any more.
+  const valasRows_ = (await sql`
+    SELECT min_base, fee_mode, fee_value FROM tier_fee_brackets
+     WHERE scope = 'valas' ORDER BY min_base
+  `) as unknown as { min_base: string; fee_mode: string; fee_value: string }[]
+  const valasBrackets: TierFeeBracketInput[] = valasRows_.map((b) => ({
+    minBase: b.min_base, feeMode: b.fee_mode, feeValue: b.fee_value,
+  }))
   console.log(
-    `  ${valasBrackets.length} bracket(s) across ${byCountry.size} country/countries` +
-      `, rounding up to ${rp(roundTo)}`,
+    `  ${valasBrackets.length} shared rupiah bracket(s), rounding up to ${rp(roundTo)}`,
   )
 
   const valasRows = (await sql`
-    SELECT p.id, p.name, p.price, p.valas, p.kurs, p.fee_valas, p.country_id, c.currency
+    SELECT p.id, p.name, p.price, p.valas, p.kurs, p.profit_fixed, p.country_id, c.currency,
+           p.gram, p.cargo_per_kg
       FROM products p LEFT JOIN countries c ON c.id = p.country_id
      WHERE p.pricing_method = 'tier_fee' AND p.country_id IS NOT NULL AND p.name != ''
      ORDER BY p.id
   `) as unknown as {
     id: number; name: string; price: number; valas: string; kurs: string
-    fee_valas: string | null; country_id: number; currency: string | null
+    profit_fixed: number; country_id: number; currency: string | null
+    gram: number; cargo_per_kg: string
   }[]
 
   if (valasRows.length === 0) {
     console.log("  ℹ️  no products use valas-mode Tier Fee yet")
   } else {
     let broken = 0
-    let noFee = 0
     const stale: string[] = []
     for (const r of valasRows) {
       const valas = Number(r.valas) || 0
       const kurs = Number(r.kurs) || 0
-      if (r.fee_valas == null) {
-        noFee++
-        failed = true
-        console.log(`  ❌ #${r.id} ${r.name.slice(0, 34)} is valas-mode but fee_valas is NULL`)
-        continue
-      }
-      const stored = Number(r.fee_valas)
+      // Freight moves cogs, not price, so these do not affect the assertions below — passed
+      // from the row so the call states the whole input rather than implying zero weight.
+      const gram = Number(r.gram) || 0
+      const cargoPerKg = Number(r.cargo_per_kg) || 0
+      // profit_fixed is where the resolved RUPIAH fee is snapshotted.
+      const landed = Math.round(landedCost({ valas, kurs, gram, cargoPerKg }))
+      const stored = Number(r.profit_fixed)
       // Run the real formula, not a closed form: it has to stay right when the
       // rounding step changes.
       const own = Math.round(
-        calcTierFeeValasPrice({ valas, feeValas: stored, kurs, roundTo }).price,
+        calcTierFeeValasPrice({ valas, kurs, gram, cargoPerKg, fee: stored, roundTo }).price,
       )
       if (own !== Number(r.price)) {
         broken++
@@ -266,18 +293,18 @@ async function main() {
           `  ❌ #${r.id} ${r.name.slice(0, 34)} stored ${rp(r.price)} but its own inputs give ${rp(own)}`,
         )
       }
-      const live = resolveTierFee(byCountry.get(r.country_id) ?? [], valas)
+      const live = resolveRupiahTierFee(valasBrackets, landed)
       if (Math.abs(live - stored) > 1e-9) {
         const now = Math.round(
-          calcTierFeeValasPrice({ valas, feeValas: live, kurs, roundTo }).price,
+          calcTierFeeValasPrice({ valas, kurs, gram, cargoPerKg, fee: live, roundTo }).price,
         )
         stale.push(
-          `    #${r.id} ${r.name.slice(0, 34).padEnd(34)} fee ${stored} → ${live} ${r.currency ?? ""}` +
+          `    #${r.id} ${r.name.slice(0, 34).padEnd(34)} fee Rp ${rp(stored)} → Rp ${rp(live)}` +
             `   price ${rp(r.price)} → ${rp(now)}`,
         )
       }
     }
-    if (broken === 0 && noFee === 0) {
+    if (broken === 0) {
       console.log(`  ✅ price: all ${valasRows.length} row(s) agree with their own snapshot`)
     }
     if (stale.length === 0) {

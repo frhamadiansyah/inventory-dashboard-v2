@@ -15,8 +15,9 @@
 //                       distinguishing this method from Tier Fee. If the body could
 //                       supply it, the two would be the same method with different
 //                       labels.
-//   tier_fee, VALAS   — the fee comes from the country's brackets and is converted at
-//                       the country's rate; nothing about it is typed either.
+//   tier_fee, VALAS   — the fee comes from the shared valas brackets, matched against a
+//                       base cost that is itself derived from valas, the rate and the
+//                       freight; nothing about it is typed either.
 //
 // tier_fee in RUPIAH mode is the exception and keeps the client-computed price: its
 // fee has always been typed on the product, with the brackets merely pre-filling the
@@ -29,11 +30,14 @@
 // The math itself lives in lib/pricing.ts, which has no imports and runs unchanged
 // in the browser for the form's live preview.
 
-import { calcTierKursPrice, calcRupiahFeePrice, calcTierFeeValasPrice } from "./pricing"
-import type { PricingMethod } from "./pricing"
+import {
+  calcTierKursPrice, calcRupiahFeePrice, calcTierFeeValasPrice,
+  flatFeeAmount, landedCost,
+} from "./pricing"
+import type { FlatFeeMode, PricingMethod } from "./pricing"
 import { resolveTieredKurs } from "./kurs-tiers"
-import { resolveTierFee } from "./tier-fee"
-import { getTierKursInputs, getTierFeeValasInputs, getFlatFee } from "./db"
+import { resolveRupiahTierFee } from "./tier-fee"
+import { getTierKursInputs, getTierFeeValasInputs, getFlatFeeSettings } from "./db"
 import type { DBExecutor } from "./db/actor"
 
 export interface ComputedPricing {
@@ -42,13 +46,48 @@ export interface ComputedPricing {
   /** The tiered rate actually used, to snapshot onto products.tiered_kurs. Null
    *  for every method other than tier_kurs. */
   tieredKurs: number | null
-  /** The fee actually used, to snapshot onto products.profit_fixed — non-null only
-   *  for flat_fee. Null means "store what the body sent", which is what every other
-   *  method does, including rupiah-mode tier_fee where the user types the fee. */
+  /** The fee actually used, to snapshot onto products.profit_fixed — non-null for
+   *  flat_fee and for valas-mode tier_fee. Null means "store what the body sent", which
+   *  is what the other two do, including rupiah-mode tier_fee where the user types it. */
   profitFixed: number | null
-  /** The valas fee actually used, to snapshot onto products.fee_valas. Non-null only
-   *  for valas-mode tier_fee. */
-  feeValas: number | null
+  /** The rupiah cost to store. Non-null for the two valas fee modes, where cost is
+   *  DERIVED from valas, the rate and the freight rather than typed — so it has to be
+   *  resolved here rather than taken from the body, or the client could set a cost that
+   *  contradicts the inputs beside it. Null means "store what the body sent". */
+  cost: number | null
+}
+
+/**
+ * The four inputs to landed cost, parsed off the body once.
+ *
+ * All three valas paths below read exactly these, and each of them needs them twice — once
+ * for the base cost that picks a bracket, once for the price. Parsing them per use is how
+ * two reads of the same field would start to disagree.
+ */
+function landedInputs(body: Record<string, unknown>): {
+  valas: number; kurs: number; gram: number; cargoPerKg: number
+} {
+  return {
+    valas: Number(body.valas) || 0,
+    kurs: Number(body.kurs) || 0,
+    gram: Number(body.gram) || 0,
+    cargoPerKg: Number(body.cargoPerKg) || 0,
+  }
+}
+
+/**
+ * The price to fall back on when the formula yields 0 — the stored one if there is a row,
+ * otherwise whatever the body sent.
+ *
+ * `|| 0` rather than a second `??`: a body with no `price` gives `Number(undefined)` = NaN,
+ * which `??` passes through since NaN is neither null nor undefined. Every caller then
+ * compares it with `> 0`, so a NaN would silently disable the guard.
+ */
+function fallbackPrice(
+  current: { price: number } | undefined,
+  body: Record<string, unknown>,
+): number {
+  return current?.price ?? (Number(body.price) || 0)
 }
 
 /**
@@ -64,8 +103,9 @@ export interface ComputedPricing {
  * `body.price` / `body.profitFixed` are both ignored.
  *
  * For `tier_fee` WITH a country the price is recomputed as
- * ceil((valas + bracketFee) × kurs); `body.price` and `body.feeValas` are ignored.
- * Without a country it is rupiah mode and the submitted price stands.
+ * ceil(landedCost + bracketFee), with the bracket chosen by that same landed cost;
+ * `body.price` and `body.profitFixed` are ignored. Without a country it is rupiah mode and
+ * the submitted price stands.
  *
  * `countryId` drives both bracket lookups, AND decides which mode tier_fee is in. On
  * an update, callers MUST pass the STORED country_id when the body omits it — see the
@@ -73,63 +113,87 @@ export interface ComputedPricing {
  * doubly important: getting it wrong does not merely lose a country, it switches the
  * formula.
  *
- * `current` is the row's existing price and snapshots on an update; omit when
- * creating.
+ * `current` is the row's existing price and snapshots on an update; omit when creating.
+ * Its `profitFixed` is what the row was actually priced with, so a save that KEEPS the
+ * price keeps the fee that explains it — see the guards below.
  */
 export async function computeProductPrice(opts: {
   pricingMethod: PricingMethod
+  /** Only consulted for flat_fee: whether its fee is the fixed amount or a share of the
+   *  base cost (migration 054). */
+  flatFeeMode: FlatFeeMode
   countryId: number | null
   body: Record<string, unknown>
   db: DBExecutor
-  current?: { price: number; tieredKurs: number | null }
+  current?: { price: number; tieredKurs: number | null; profitFixed: number }
 }): Promise<ComputedPricing> {
-  const { pricingMethod, countryId, body, db, current } = opts
+  const { pricingMethod, flatFeeMode, countryId, body, db, current } = opts
 
   if (pricingMethod === "flat_fee") {
-    const cost = Math.round(Number(body.cost)) || 0
-    const flatFee = await getFlatFee(db)
+    const { flatFee: fixedFee, flatFeePct, flatFeeMin } = await getFlatFeeSettings(db)
+
+    // With a country the base is bought in foreign currency, so cost is landed cost —
+    // converted goods plus freight — and is DERIVED, not typed. Without one it is the
+    // rupiah figure the user entered. Same discriminator Tier Fee uses (migration 053),
+    // now that a country means something for this method too.
+    const valasMode = countryId != null
+    // landedCost directly, not calcFlatFeeValasPrice: the fee cannot be known until the
+    // cost is (percent mode reads it), so there is no price to compute yet — and calling the
+    // price function with `fee: 0` only to throw the price away invited someone to "fix"
+    // that zero.
+    const cost = valasMode
+      ? Math.round(landedCost(landedInputs(body)))
+      : Math.round(Number(body.cost)) || 0
+    // Resolved from cost, so it has to come after it. In fixed mode the base is ignored and
+    // this is just the Settings amount.
+    const flatFee = flatFeeAmount(flatFeeMode, cost, fixedFee, flatFeePct, flatFeeMin)
     const computed = Math.round(calcRupiahFeePrice(cost, flatFee))
 
     // Same guard as tier_kurs below, and for the same reason: a Sheets-imported row
     // with no cost would otherwise have a real price overwritten by just the fee on
     // an unrelated edit. Here that means keeping the stored price when there is no
     // cost to build one from.
-    const fallback = current?.price ?? Number(body.price) ?? 0
+    const fallback = fallbackPrice(current, body)
     if (cost === 0 && fallback > 0) {
-      return { price: Math.round(fallback), tieredKurs: null, profitFixed: flatFee, feeValas: null }
+      // The row's own fee, not the one just resolved: with no cost to work from, percent mode
+      // resolves to the FLOOR (max(0, flat_fee_min)) and fixed mode to the Settings amount —
+      // neither of which built the price being kept. Storing one would leave a row whose fee
+      // and price contradict each other, which is exactly what the dryrun gates flag.
+      return { price: Math.round(fallback), tieredKurs: null, profitFixed: current?.profitFixed ?? flatFee, cost: valasMode ? cost : null }
     }
-    return { price: computed, tieredKurs: null, profitFixed: flatFee, feeValas: null }
+    // cost returned only in valas mode; in rupiah mode the body's own value stands.
+    return { price: computed, tieredKurs: null, profitFixed: flatFee, cost: valasMode ? cost : null }
   }
 
-  // Valas mode: a Tier Fee product WITH a country. The country supplies both the
-  // bracket set and the rate, so `countryId` alone decides mode — there is no
-  // separate flag to fall out of sync with.
+  // Valas mode: a Markup Tier product WITH a country. The country supplies the rate and the
+  // freight rate; the brackets themselves are shared by every country (migrations 056/057).
   if (pricingMethod === "tier_fee" && countryId != null) {
-    const valas = Number(body.valas) || 0
-    const kurs = Number(body.kurs) || 0
-    const { brackets, roundTo } = await getTierFeeValasInputs(countryId, db)
+    const { brackets, roundTo } = await getTierFeeValasInputs(db)
+    const inputs = landedInputs(body)
+    const landed = Math.round(landedCost(inputs))
 
-    // Resolved from the live table, never from the body. No bracket means a fee of 0,
-    // which prices the product at cost — the same visible, self-correcting failure
-    // Tier Kurs has when a country has no brackets.
-    const feeValas = resolveTierFee(brackets, valas)
-    const computed = Math.round(calcTierFeeValasPrice({ valas, feeValas, kurs, roundTo }).price)
+    // Resolved from the live table against the RUPIAH base cost, never from the body. No
+    // bracket means a fee of 0, which prices the product at cost — the same visible,
+    // self-correcting failure Tier Kurs has when a country has no brackets.
+    const fee = resolveRupiahTierFee(brackets, landed)
+    const computed = Math.round(calcTierFeeValasPrice({ ...inputs, fee, roundTo }).price)
 
-    // Same Sheets-import guard as the other two authoritative paths.
-    const fallback = current?.price ?? Number(body.price) ?? 0
+    // Same Sheets-import guard as the other authoritative paths, and the fee is kept with the
+    // price for the same reason as in flat_fee above.
+    const fallback = fallbackPrice(current, body)
     if (computed === 0 && fallback > 0) {
-      return { price: Math.round(fallback), tieredKurs: null, profitFixed: 0, feeValas }
+      return { price: Math.round(fallback), tieredKurs: null, profitFixed: current?.profitFixed ?? fee, cost: landed }
     }
-    // profitFixed 0, not null: the rupiah fee column is meaningless for a row whose
-    // fee is denominated in valas, and leaving it to the body would let a stale
-    // rupiah fee ride along from before the product switched modes.
-    return { price: computed, tieredKurs: null, profitFixed: 0, feeValas }
+    // The fee is rupiah, so it snapshots onto profit_fixed like the other two fee modes —
+    // the superseded per-country shape needed its own foreign-currency column for this. Cost
+    // is derived, so it is returned for storage rather than taken from the body.
+    return { price: computed, tieredKurs: null, profitFixed: fee, cost: landed }
   }
 
   if (pricingMethod !== "tier_kurs") {
     // overseas and rupiah-mode tier_fee: the browser's price stands, as it always
-    // has. Clearing tieredKurs and feeValas here also drops whatever a row carried
-    // from another method before it was switched to this one.
+    // has. Returning a null tieredKurs also drops whatever rate a row carried from
+    // another method before it was switched to this one.
     const submitted = Math.round(Number(body.price)) || 0
 
     // The same Sheets-import guard the three authoritative paths carry, and it belongs
@@ -145,10 +209,10 @@ export async function computeProductPrice(opts: {
     // mistaken for a decision. Set it directly if you really mean 0.
     const stored = current?.price ?? 0
     if (submitted === 0 && stored > 0) {
-      return { price: Math.round(stored), tieredKurs: null, profitFixed: null, feeValas: null }
+      return { price: Math.round(stored), tieredKurs: null, profitFixed: null, cost: null }
     }
 
-    return { price: submitted, tieredKurs: null, profitFixed: null, feeValas: null }
+    return { price: submitted, tieredKurs: null, profitFixed: null, cost: null }
   }
 
   const valas = Number(body.valas) || 0
@@ -159,16 +223,24 @@ export async function computeProductPrice(opts: {
   // the same rate cost is booked at — so a country with no brackets yields a
   // spread of exactly 0 rather than a rate mismatch.
   const tieredKurs = resolveTieredKurs(kursTiers, valas, kurs)
-  const computed = Math.round(calcTierKursPrice({ valas, tieredKurs, kurs, roundTo }).price)
+  // gram and cargoPerKg move only `cogs`, which nothing here stores. packingFee DOES move
+  // the price, but it is a pass-through charge the user sets — like valas, not like the
+  // tiered rate — so the body is its rightful source.
+  const computed = Math.round(calcTierKursPrice({
+    valas, tieredKurs, kurs, roundTo,
+    gram: Number(body.gram) || 0,
+    cargoPerKg: Number(body.cargoPerKg) || 0,
+    packingFee: Number(body.packingFee) || 0,
+  }).price)
 
   // Some products carry a price imported directly from the original Google Sheets
   // migration, with none of the inputs a formula needs. Recomputing those yields
   // 0, so an unrelated edit — fixing a store name — would silently wipe a real
   // price. Keep the existing one; it self-corrects once the inputs are filled in.
-  const fallback = current?.price ?? Number(body.price) ?? 0
+  const fallback = fallbackPrice(current, body)
   if (computed === 0 && fallback > 0) {
-    return { price: Math.round(fallback), tieredKurs, profitFixed: null, feeValas: null }
+    return { price: Math.round(fallback), tieredKurs, profitFixed: null, cost: null }
   }
 
-  return { price: computed, tieredKurs, profitFixed: null, feeValas: null }
+  return { price: computed, tieredKurs, profitFixed: null, cost: null }
 }

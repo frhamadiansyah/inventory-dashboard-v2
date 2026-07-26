@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
 import { getProductsPaginated, getProductStores, addProduct, getCountries, withActor } from "@/lib/db"
 import { computeProductPrice } from "@/lib/pricing-server"
-import { toPricingMethod } from "@/lib/pricing"
+import { toFlatFeeMode, toPricingMethod } from "@/lib/pricing"
 
 export async function GET(req: NextRequest) {
   const { session, error: authError } = await requireSession()
@@ -57,13 +57,14 @@ export async function POST(req: NextRequest) {
     }
 
     const pricingMethod = toPricingMethod(body.pricingMethod)
+    const flatFeeMode = toFlatFeeMode(body.flatFeeMode)
     const countryId = body.countryId != null ? Number(body.countryId) : null
 
     const result = await withActor(session.user.email, async (tx) => {
       // Tier Kurs and Flat Fee are recomputed server-side: their margin inputs
       // (the bracket rate, the flat fee) are looked up here and the body's are
       // ignored. Profit Margin and Tier Fee keep storing the client-computed price.
-      const priced = await computeProductPrice({ pricingMethod, countryId, body, db: tx })
+      const priced = await computeProductPrice({ pricingMethod, flatFeeMode, countryId, body, db: tx })
 
       return addProduct({
         name: String(name).trim(),
@@ -74,15 +75,22 @@ export async function POST(req: NextRequest) {
         valas: Number(body.valas) || 0,
         kurs: Number(body.kurs) || 0,
         tieredKurs: priced.tieredKurs,
-        feeValas: priced.feeValas,
         cargoPerKg: Number(body.cargoPerKg) || 0,
         profitPct: Number(body.profitPct) || 0,
         operationalFee: Number(body.operationalFee ?? 5000),
         packingFee: Number(body.packingFee ?? 5000),
-        cost: Number(body.cost) || 0,
+        // priced.cost is non-null only for the two valas fee modes, where cost is landed
+        // cost rather than a typed figure and the server resolves it.
+        //
+        // `|| 0` inside the parens, not a third `??`: overseas and Tier Kurs send no `cost`
+        // at all, and `Number(undefined)` is NaN — which `??` passes straight through,
+        // because NaN is neither null nor undefined. That reached the INTEGER column as
+        // "NaN" and failed the whole insert.
+        cost: priced.cost ?? (Number(body.cost) || 0),
         // Server-resolved for flat_fee, the body's own value otherwise.
         profitFixed: priced.profitFixed ?? (Number(body.profitFixed) || 0),
         pricingMethod,
+        flatFeeMode,
       }, tx)
     })
 
