@@ -489,7 +489,8 @@ export default function ProductsPageClient() {
         const p = row.original
         if (usesRupiahCost(p)) return <span className="tabular-nums">{fmt(p.profitFixed)}</span>
         if (isTierFeeValas(p) && p.feeValas != null) {
-          return <span className="tabular-nums">{fmt(p.feeValas)} <span className="text-gray-400">{p.countryName}</span></span>
+          // countryCurrency, not countryName: the unit is CNY, and the country is CN.
+          return <span className="tabular-nums">{fmt(p.feeValas)} <span className="text-gray-400">{p.countryCurrency}</span></span>
         }
         return <span className="tabular-nums">—</span>
       },

@@ -58,6 +58,7 @@ export async function getProducts(): Promise<ProductRow[]> {
   const rows = await sql`
     SELECT p.id, p.name, p.store, p.price, p.gram,
            p.country_id, COALESCE(c.name, '') AS country_name,
+           COALESCE(c.currency, '') AS country_currency,
            p.valas, p.kurs, p.tiered_kurs, p.fee_valas, p.cargo_per_kg, p.profit_pct,
            p.pricing_method,
            p.operational_fee, p.packing_fee, p.cost, p.profit_fixed,
@@ -75,6 +76,7 @@ export async function getProducts(): Promise<ProductRow[]> {
     gram: r.gram ?? 0,
     countryId: r.country_id,
     countryName: r.country_name ?? "",
+    countryCurrency: r.country_currency ?? "",
     valas: Number(r.valas) || 0,
     // NOT `|| 0`: null means "not priced on a tiered rate", which a 0 could not be
     // told apart from.
@@ -106,6 +108,7 @@ function mapProductRow(r: Record<string, unknown>): ProductRow {
     gram: (r.gram as number) ?? 0,
     countryId: (r.country_id as number | null) ?? null,
     countryName: (r.country_name as string) ?? "",
+    countryCurrency: (r.country_currency as string) ?? "",
     valas: Number(r.valas) || 0,
     // NOT `|| 0`: null means "not priced on a tiered rate", which a 0 could not be
     // told apart from.
@@ -236,6 +239,7 @@ export async function getProductsPaginated(opts: {
   const dataQuery = sql.unsafe(
     `SELECT p.id, p.name, p.store, p.price, p.gram,
             p.country_id, COALESCE(c.name, '') AS country_name,
+            COALESCE(c.currency, '') AS country_currency,
             p.valas, p.kurs, p.tiered_kurs, p.fee_valas, p.cargo_per_kg, p.profit_pct,
             p.pricing_method,
             p.operational_fee, p.packing_fee, p.cost, p.profit_fixed,

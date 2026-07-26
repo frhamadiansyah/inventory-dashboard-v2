@@ -127,12 +127,28 @@ export async function computeProductPrice(opts: {
   }
 
   if (pricingMethod !== "tier_kurs") {
-    // Unchanged behaviour for overseas and rupiah-mode tier_fee, including clearing
-    // any stale tiered rate or valas fee left over from another method.
-    return {
-      price: Math.round(Number(body.price)) || 0,
-      tieredKurs: null, profitFixed: null, feeValas: null,
+    // overseas and rupiah-mode tier_fee: the browser's price stands, as it always
+    // has. Clearing tieredKurs and feeValas here also drops whatever a row carried
+    // from another method before it was switched to this one.
+    const submitted = Math.round(Number(body.price)) || 0
+
+    // The same Sheets-import guard the three authoritative paths carry, and it belongs
+    // here most of all. 40 of the 43 rupiah tier_fee rows are original spreadsheet
+    // imports: they hold a real price but no cost and no fee, so the form computes
+    // cost + fee = 0 and, without this, saving one — even just to fix a typo in its
+    // name — replaced a real price with 0. The same path opens up when a valas-mode row
+    // is switched to rupiah before a cost has been entered.
+    //
+    // The cost of the guard: a price can no longer be driven to 0 through the form once
+    // the row has one. Getting there means zeroing every pricing input, which leaves a
+    // row with no pricing data at all — precisely the state this exists to stop being
+    // mistaken for a decision. Set it directly if you really mean 0.
+    const stored = current?.price ?? 0
+    if (submitted === 0 && stored > 0) {
+      return { price: Math.round(stored), tieredKurs: null, profitFixed: null, feeValas: null }
     }
+
+    return { price: submitted, tieredKurs: null, profitFixed: null, feeValas: null }
   }
 
   const valas = Number(body.valas) || 0

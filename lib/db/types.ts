@@ -430,6 +430,10 @@ export interface ProductRow {
   gram: number
   countryId: number | null
   countryName: string
+  /** The country's currency code, for labelling amounts held in it — feeValas most
+   *  of all, which is meaningless without its unit. Empty string when there is no
+   *  country. */
+  countryCurrency: string
   valas: number
   kurs: number
   /** The tiered rate this row was priced with, snapshotted at save time like
