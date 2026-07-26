@@ -4,31 +4,9 @@ import TableSkeleton from "@/components/TableSkeleton"
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { CountryRow } from "@/lib/db"
 import DataGrid, { type ColumnDef, numericFilter, textContainsFilter } from "@/components/DataGrid"
+import { useLiveIdrRate } from "@/hooks/useLiveIdrRate"
 
 const EMPTY_FORM = { name: "", currency: "", kurs: "", cargoPerKg: "" }
-
-// Live mid-market rate for a 3-letter currency → IDR, via the free, keyless
-// open.er-api.com (CORS-friendly). Returns null until a valid code is entered.
-function useLiveIdrRate(currency: string) {
-  const [rate, setRate] = useState<number | null>(null)
-  const [loading, setLoading] = useState(false)
-  useEffect(() => {
-    const code = currency.trim().toUpperCase()
-    if (!/^[A-Z]{3}$/.test(code) || code === "IDR") { setRate(null); setLoading(false); return }
-    let cancelled = false
-    setLoading(true)
-    fetch(`https://open.er-api.com/v6/latest/${code}`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (cancelled) return
-        setRate(d?.result === "success" && typeof d.rates?.IDR === "number" ? d.rates.IDR : null)
-      })
-      .catch(() => { if (!cancelled) setRate(null) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [currency])
-  return { rate, loading }
-}
 
 // Mobile-only read-only boxes: the live 1-unit rate to IDR for the typed
 // currency, plus a +5% markup rate. Styled to match the form's input boxes.
