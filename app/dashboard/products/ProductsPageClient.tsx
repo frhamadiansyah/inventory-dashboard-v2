@@ -1132,7 +1132,7 @@ function AddProductForm({
           {selectedCountry && chargedKurs === selectedCountry.kurs && (
             <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               No kurs bracket covers this valas for {selectedCountry.name}, so the flat
-              rate is used and there is no margin. Add brackets in Settings → Tier Kurs.
+              rate is used and there is no margin. Add brackets in Settings → Pricing.
             </p>
           )}
         </>
@@ -1577,7 +1577,7 @@ function EditProductModal({
             {draftCountry && draftChargedKurs === draftCountry.kurs && (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                 No kurs bracket covers this valas for {draftCountry.name}, so the flat rate
-                is used and there is no margin. Add brackets in Settings → Tier Kurs.
+                is used and there is no margin. Add brackets in Settings → Pricing.
               </p>
             )}
           </>

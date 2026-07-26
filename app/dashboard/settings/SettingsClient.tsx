@@ -76,12 +76,11 @@ const SAMPLE_VARS: Record<TemplateKey, Record<string, string>> = {
 
 const textareaCls = "w-full border border-cream-border rounded-lg px-3 py-2 text-sm bg-white font-mono focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors min-h-[240px] resize-y"
 
-type Tab = "business" | "product-defaults" | "kurs-tiers" | "messages"
+type Tab = "business" | "product-defaults" | "messages"
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "business", label: "Profile" },
   { key: "product-defaults", label: "Pricing" },
-  { key: "kurs-tiers", label: "Tier Kurs" },
   { key: "messages", label: "Templates" },
 ]
 
@@ -127,10 +126,10 @@ export default function SettingsClient() {
       <div className={tab === "business" ? "" : "hidden"}>
         <BusinessProfileSection />
       </div>
-      <div className={tab === "product-defaults" ? "" : "hidden"}>
+      {/* Both cards are pricing config, so they share one tab. Product defaults
+          first — it owns the rounding step the bracket readout below reports. */}
+      <div className={`flex flex-col gap-6 ${tab === "product-defaults" ? "" : "hidden"}`}>
         <ProductDefaultsSection />
-      </div>
-      <div className={tab === "kurs-tiers" ? "" : "hidden"}>
         <KursTiersSection />
       </div>
       <div className={`flex flex-col gap-6 ${tab === "messages" ? "" : "hidden"}`}>
