@@ -64,7 +64,17 @@ export default function InfoPopover({
         aria-label={ariaLabel}
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className={`shrink-0 w-[22px] h-[22px] inline-flex items-center justify-center rounded-full border text-[11px] font-semibold transition-colors disabled:opacity-40 ${
+        // 13px, small enough to sit inside a text-xs label line (1rem) with room to
+        // spare. The panel is positioned off getBoundingClientRect, so it follows any
+        // size change on its own.
+        //
+        // The glyph is 8px rather than the proportional 7: below 8 the "i" stops being
+        // legible, and it is the only thing identifying the button.
+        //
+        // before:-inset-1.5 restores a ~25px pointer target around a 13px circle. The
+        // pseudo-element is absolutely positioned, so it costs no layout — without it
+        // the visible size IS the hit area, which is well under any usable minimum.
+        className={`relative shrink-0 w-[13px] h-[13px] inline-flex items-center justify-center rounded-full border text-[8px] font-semibold transition-colors disabled:opacity-40 before:absolute before:-inset-1.5 before:content-[''] ${
           open ? "border-brand text-brand" : "border-cream-border text-gray-400 hover:border-brand hover:text-brand"
         }`}
       >
