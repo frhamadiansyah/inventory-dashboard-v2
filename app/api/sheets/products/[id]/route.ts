@@ -94,12 +94,14 @@ export async function PUT(req: NextRequest, { params }: Params) {
         valas: Number(body.valas) || 0,
         kurs: Number(body.kurs) || 0,
         tieredKurs: priced.tieredKurs,
+        feeValas: priced.feeValas,
         cargoPerKg: Number(body.cargoPerKg) || 0,
         profitPct: Number(body.profitPct) || 0,
         operationalFee: Number(body.operationalFee ?? 5000),
         packingFee: Number(body.packingFee ?? 5000),
         cost: Number(body.cost) || 0,
-        profitFixed: Number(body.profitFixed) || 0,
+        // Server-resolved for flat_fee, the body's own value otherwise.
+        profitFixed: priced.profitFixed ?? (Number(body.profitFixed) || 0),
         pricingMethod,
       }, tx)
     })

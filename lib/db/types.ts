@@ -2,6 +2,7 @@
 
 import type { PaymentStatus } from "./finance"
 import type { PricingMethod } from "@/lib/pricing"
+import type { TierFeeMode } from "@/lib/tier-fee"
 
 // ─── Types (same interfaces as the old sheets.ts) ───────────────────────────
 
@@ -402,6 +403,25 @@ export interface KursTierRow {
   updatedAt: string
 }
 
+/**
+ * One Tier Fee bracket: from `minBase` upward, charge this much
+ * fixed profit. `minBase` is INCLUSIVE and the highest matching minimum wins — the
+ * resolution lives in lib/tier-fee.ts.
+ *
+ * A SUGGESTION for the Add Product form, not a stored pricing rule: see
+ * migration 051.
+ */
+export interface TierFeeBracketRow {
+  id: number
+  /** null = the rupiah scope; a number = that country's valas scope. */
+  countryId: number | null
+  minBase: number
+  feeMode: TierFeeMode
+  feeValue: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface ProductRow {
   id: number
   name: string
@@ -415,6 +435,10 @@ export interface ProductRow {
   /** The tiered rate this row was priced with, snapshotted at save time like
    *  `kurs`. Null unless pricingMethod is "tier_kurs". See lib/kurs-tiers.ts. */
   tieredKurs: number | null
+  /** The fee this row was priced with, in the country's currency, snapshotted at
+   *  save time like `kurs`. Null unless pricingMethod is "tier_fee" AND the row has
+   *  a country (valas mode). See lib/tier-fee.ts. */
+  feeValas: number | null
   cargoPerKg: number
   profitPct: number
   operationalFee: number

@@ -16,6 +16,14 @@ export interface ProductDefaults {
    * Tier Kurs products on their next save.
    */
   tierKursRoundTo: number
+  /**
+   * The fee added to base cost by the Flat Fee method (migration 052).
+   *
+   * Also NOT a form pre-fill: it is resolved server-side at save time, which is the
+   * whole point of the method — every Flat Fee product is priced from this one
+   * number, so changing it reprices them all on their next save.
+   */
+  flatFee: number
 }
 
 export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
@@ -25,4 +33,6 @@ export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
   markupPct: 5,
   // 5,000 matches how the catalogue is actually priced — see migration 050.
   tierKursRoundTo: 5000,
+  // The owner's starting value, not a derived one. Editable in Settings.
+  flatFee: 10_000,
 }

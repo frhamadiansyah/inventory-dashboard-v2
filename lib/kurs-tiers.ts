@@ -22,6 +22,34 @@ export interface KursTierInput {
 }
 
 /**
+ * The bracket that applies to `valas`, or null when none does — no brackets, a
+ * valas below the lowest floor, or every row unparseable.
+ *
+ * Separate from resolveTieredKurs() because the products form shows WHICH bracket
+ * produced the charged rate, and both must agree by construction.
+ */
+export function pickKursTier<T extends KursTierInput>(
+  tiers: readonly T[] | null | undefined,
+  valas: number,
+): T | null {
+  let bestMin = -Infinity
+  let best: T | null = null
+  for (const t of tiers ?? []) {
+    const min = Number(t.minValas)
+    const kurs = Number(t.kurs)
+    if (!Number.isFinite(min) || !Number.isFinite(kurs) || kurs <= 0) continue
+    // Strict >, so the first of two equal minima wins. The
+    // UNIQUE (country_id, min_valas) constraint makes that unreachable through
+    // the app anyway.
+    if (valas >= min && min > bestMin) {
+      bestMin = min
+      best = t
+    }
+  }
+  return best
+}
+
+/**
  * The rate to charge for `valas`.
  *
  * Falls back to `fallbackKurs` when there are no brackets, when none matches
@@ -37,21 +65,9 @@ export function resolveTieredKurs(
   valas: number,
   fallbackKurs: number,
 ): number {
-  let bestMin = -Infinity
-  let best: number | null = null
-  for (const t of tiers ?? []) {
-    const min = Number(t.minValas)
-    const kurs = Number(t.kurs)
-    if (!Number.isFinite(min) || !Number.isFinite(kurs) || kurs <= 0) continue
-    // Strict >, so the first of two equal minima wins. The
-    // UNIQUE (country_id, min_valas) constraint makes that unreachable through
-    // the app anyway.
-    if (valas >= min && min > bestMin) {
-      bestMin = min
-      best = kurs
-    }
-  }
-  return best ?? fallbackKurs
+  const best = pickKursTier(tiers, valas)
+  // pickKursTier has already rejected non-finite and non-positive rates.
+  return best ? Number(best.kurs) : fallbackKurs
 }
 
 /**

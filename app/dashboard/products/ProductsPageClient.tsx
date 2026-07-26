@@ -13,13 +13,21 @@ import ToggleSwitch from "@/components/ToggleSwitch"
 import SearchableSelect from "@/components/SearchableSelect"
 import SearchInput from "@/components/SearchInput"
 import {
-  calcAbroadPrice, calcDomesticPrice, abroadProfit, calcTierKursPrice, tierKursProfit,
+  calcAbroadPrice, calcRupiahFeePrice, abroadProfit, calcTierKursPrice, tierKursProfit,
+  calcTierFeeValasPrice,
   PRICING_METHODS, PRICING_METHOD_LABEL, type PricingMethod,
 } from "@/lib/pricing"
 import { resolveTieredKurs, tiersForCountry } from "@/lib/kurs-tiers"
+import {
+  resolveTierFee, resolveRupiahTierFee, bracketsForScope, DEFAULT_RUPIAH_TIER_FEE_BRACKETS,
+} from "@/lib/tier-fee"
 import { useKursTiers } from "@/hooks/useKursTiers"
+import { useTierFeeBrackets } from "@/hooks/useTierFeeBrackets"
+import TierFeePopover from "./TierFeePopover"
+import KursTierPopover from "./KursTierPopover"
 import { useCopyFeedback } from "@/hooks/useCopyFeedback"
 import { useProductDefaults } from "@/hooks/useProductDefaults"
+import { DEFAULT_PRODUCT_DEFAULTS } from "@/lib/product-defaults"
 
 const PAGE_SIZE = 25
 
@@ -70,18 +78,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-function defaultDomesticProfit(cost: number): number {
-  if (cost >= 800_000) return Math.round(cost * 0.15)
-  if (cost >= 700_000) return 80_000
-  if (cost > 498_000) return 55_000
-  if (cost > 398_000) return 45_000
-  if (cost > 298_000) return 35_000
-  if (cost > 198_000) return 25_000
-  if (cost > 98_000) return 20_000
-  if (cost > 28_000) return 10_000
-  return 5_000
-}
-
 // Keyed on pricing_method rather than `countryId != null` (migration 050): a Tier
 // Kurs product HAS a country — it needs the FX link for valas and the actual rate —
 // but must not use the overseas formula or show its inputs.
@@ -93,10 +89,32 @@ function isTierKurs(p: ProductRow) {
   return p.pricingMethod === "tier_kurs"
 }
 
-/** True for the methods that need a country selected, i.e. everything but
- *  domestic. Both read valas and the country's actual rate. */
+/** True for a row priced from a rupiah base cost plus a rupiah fee: Flat Fee, and
+ *  Tier Fee WITHOUT a country. Those share the cost and profit_fixed columns.
+ *
+ *  Tier Fee WITH a country is valas mode — base and fee are both foreign currency —
+ *  so it deliberately does not count. See migration 053. */
+function usesRupiahCost(p: ProductRow) {
+  return p.pricingMethod === "flat_fee" ||
+    (p.pricingMethod === "tier_fee" && p.countryId == null)
+}
+
+/** True for a Tier Fee row priced in foreign currency, i.e. one that has a country. */
+function isTierFeeValas(p: ProductRow) {
+  return p.pricingMethod === "tier_fee" && p.countryId != null
+}
+
+/** True for the methods that CANNOT price without a country. Tier Fee is absent on
+ *  purpose: a country is optional there, and whether it has one is exactly what
+ *  chooses between its rupiah and valas modes. */
 function methodNeedsCountry(m: PricingMethod) {
   return m === "overseas" || m === "tier_kurs"
+}
+
+/** True for the methods a country may be attached to at all. Only Flat Fee never
+ *  takes one — its fee is a single rupiah setting. */
+function methodAllowsCountry(m: PricingMethod) {
+  return m !== "flat_fee"
 }
 
 // ─── Main component ────────────────────────────────────────────────────────
@@ -248,10 +266,10 @@ export default function ProductsPageClient() {
       headers: { "Content-Type": "application/json" },
       // PUT is a full-row update, so every field has to be resent even though only
       // `store` changed. pricingMethod and countryId are sent explicitly rather
-      // than left to the server's keep-if-absent fallback. tieredKurs is NOT sent:
-      // the server re-resolves it from the brackets, and sending a value would
-      // imply the client had a say in it. countryId matters precisely because that
-      // lookup keys on it.
+      // than left to the server's keep-if-absent fallback. tieredKurs and feeValas
+      // are NOT sent: the server re-resolves both from the brackets, and sending a
+      // value would imply the client had a say in it. countryId matters precisely
+      // because both lookups key on it — and for Tier Fee it also picks the mode.
       body: JSON.stringify({
         name: row.name,
         store,
@@ -349,13 +367,14 @@ export default function ProductsPageClient() {
       filterFn: "textContains",
       cell: ({ row }) => {
         const method = row.original.pricingMethod
-        const tone = {
+        const tone: Record<PricingMethod, string> = {
           overseas: "bg-blue-50 text-blue-600",
-          domestic: "bg-green-50 text-green-600",
+          tier_fee: "bg-green-50 text-green-600",
+          flat_fee: "bg-amber-50 text-amber-700",
           tier_kurs: "bg-purple-50 text-purple-600",
-        }[method]
+        }
         return (
-          <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${tone}`}>
+          <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${tone[method]}`}>
             {PRICING_METHOD_LABEL[method]}
           </span>
         )
@@ -375,7 +394,7 @@ export default function ProductsPageClient() {
       size: 90,
       filterFn: "numeric",
       enableColumnFilter: false,
-      cell: ({ row }) => <span className="tabular-nums">{row.original.pricingMethod !== "domestic" ? fmt(row.original.valas) : "—"}</span>,
+      cell: ({ row }) => <span className="tabular-nums">{row.original.pricingMethod !== "tier_fee" ? fmt(row.original.valas) : "—"}</span>,
       meta: { align: "right" },
     },
     {
@@ -393,7 +412,7 @@ export default function ProductsPageClient() {
       size: 90,
       filterFn: "numeric",
       enableColumnFilter: false,
-      cell: ({ row }) => <span className="tabular-nums">{row.original.pricingMethod !== "domestic" ? fmt(row.original.kurs) : "—"}</span>,
+      cell: ({ row }) => <span className="tabular-nums">{row.original.pricingMethod !== "tier_fee" ? fmt(row.original.kurs) : "—"}</span>,
       meta: { align: "right" },
     },
     {
@@ -454,16 +473,26 @@ export default function ProductsPageClient() {
       size: 110,
       filterFn: "numeric",
       enableColumnFilter: false,
-      cell: ({ row }) => <span className="tabular-nums">{!isAbroad(row.original) ? fmt(row.original.cost) : "—"}</span>,
+      cell: ({ row }) => <span className="tabular-nums">{usesRupiahCost(row.original) ? fmt(row.original.cost) : "—"}</span>,
       meta: { align: "right" },
     },
     {
       accessorKey: "profitFixed",
-      header: "Fixed Profit",
+      header: "Fee",
       size: 110,
       filterFn: "numeric",
       enableColumnFilter: false,
-      cell: ({ row }) => <span className="tabular-nums">{!isAbroad(row.original) ? fmt(row.original.profitFixed) : "—"}</span>,
+      // Two units in one column: rupiah for the cost-based rows, the country's
+      // currency for a valas-mode Tier Fee row. Suffixed so the two can't be
+      // mistaken for each other.
+      cell: ({ row }) => {
+        const p = row.original
+        if (usesRupiahCost(p)) return <span className="tabular-nums">{fmt(p.profitFixed)}</span>
+        if (isTierFeeValas(p) && p.feeValas != null) {
+          return <span className="tabular-nums">{fmt(p.feeValas)} <span className="text-gray-400">{p.countryName}</span></span>
+        }
+        return <span className="tabular-nums">—</span>
+      },
       meta: { align: "right" },
     },
     {
@@ -803,6 +832,41 @@ function AddProductForm({
   // user hasn't started a duplicate flow (seed) in the meantime.
   const productDefaults = useProductDefaults()
   const { tiers: kursTiers } = useKursTiers()
+
+  // Suggested rupiah fee for a Tier Fee product with no country, from the owner's
+  // brackets (Settings → Pricing) rather than the table that used to be hardcoded
+  // here.
+  //
+  // Falls back to the pre-migration defaults only while the fetch is in flight, so a
+  // fast typist gets the same suggestion they always did. Once `brackets` is non-null
+  // an empty set means an empty set — the owner is allowed to turn suggestions off,
+  // and this must not overrule that.
+  const { brackets: tierFeeBrackets } = useTierFeeBrackets()
+
+  // Tier Fee prices in rupiah or in a country's currency. The mode is STORED as
+  // whether the row has a country (migration 053), but the form needs it before a
+  // country has been picked, so it is explicit state here and countryId follows it.
+  const [feeBase, setFeeBase] = useState<"rupiah" | "valas">("rupiah")
+  const tierFeeValas = type === "tier_fee" && feeBase === "valas"
+  const tierFeeRupiah = type === "tier_fee" && feeBase === "rupiah"
+  // Rows whose base cost and fee are both rupiah.
+  const rupiahCostForm = tierFeeRupiah || type === "flat_fee"
+
+  // Scoped brackets for whichever mode is active, and the fee they yield.
+  const feeScope = tierFeeValas ? (countryId ?? null) : null
+  const scopedFeeBrackets = tierFeeBrackets ? bracketsForScope(tierFeeBrackets, feeScope) : null
+  const valasFee = tierFeeValas ? resolveTierFee(scopedFeeBrackets ?? [], Number(valas) || 0) : 0
+
+  const suggestRupiahFee = (cost: number) =>
+    resolveRupiahTierFee(
+      tierFeeBrackets ? bracketsForScope(tierFeeBrackets, null) : DEFAULT_RUPIAH_TIER_FEE_BRACKETS,
+      cost,
+    )
+
+  // The Flat Fee method's fee. Settings owns it and the server re-reads it on save,
+  // so this is only ever used to render the preview.
+  const flatFee = productDefaults?.flatFee ?? DEFAULT_PRODUCT_DEFAULTS.flatFee
+
   const defaultsAppliedRef = useRef(false)
   useEffect(() => {
     if (defaultsAppliedRef.current || !productDefaults || seed) return
@@ -837,6 +901,21 @@ function AddProductForm({
       // stale snapshot can't ride along into the new product.
       setCountryId(seed.countryId)
       setValas(String(seed.valas ?? 0))
+    } else if (seed.pricingMethod === "tier_fee" && seed.countryId != null) {
+      // Valas mode. Fee deliberately not copied, as with the tiered rate above: the
+      // server re-resolves it, so a duplicate must not carry a stale snapshot.
+      setFeeBase("valas")
+      setCountryId(seed.countryId)
+      setValas(String(seed.valas ?? 0))
+    } else if (seed.pricingMethod === "tier_fee") {
+      setFeeBase("rupiah")
+      setCost(String(seed.cost ?? 0))
+      setProfitFixed(String(seed.profitFixed ?? 0))
+      setProfitManual(true)
+    } else if (seed.pricingMethod === "flat_fee") {
+      // Fee deliberately not copied, for the same reason as the tiered rate above:
+      // the server re-reads it, so a duplicate must not carry a stale snapshot.
+      setCost(String(seed.cost ?? 0))
     } else {
       setCost(String(seed.cost ?? 0))
       setProfitFixed(String(seed.profitFixed ?? 0))
@@ -889,10 +968,25 @@ function AddProductForm({
         roundTo: productDefaults?.tierKursRoundTo ?? 5000,
       })
     }
-    const price = calcDomesticPrice(Number(cost) || 0, Number(profitFixed) || 0)
+    if (tierFeeValas) {
+      return calcTierFeeValasPrice({
+        valas: Number(valas) || 0,
+        feeValas: valasFee,
+        kurs: selectedCountry?.kurs ?? 0,
+        roundTo: productDefaults?.tierKursRoundTo ?? 5000,
+      })
+    }
+    if (type === "flat_fee") {
+      // The fee comes from Settings, not the form, and the server re-reads it on
+      // save — so this preview can disagree with the stored price only if the
+      // setting changes between load and save.
+      const base = Number(cost) || 0
+      return { cogs: base, price: calcRupiahFeePrice(base, flatFee) }
+    }
+    const price = calcRupiahFeePrice(Number(cost) || 0, Number(profitFixed) || 0)
     return { cogs: 0, price }
   }, [type, valas, gram, profitPct, opFee, packFee, cost, profitFixed, selectedCountry,
-      chargedKurs, productDefaults])
+      chargedKurs, productDefaults, flatFee, tierFeeValas, valasFee])
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault()
@@ -921,6 +1015,16 @@ function AddProductForm({
         body.countryId = countryId
         body.valas = Number(valas) || 0
         body.kurs = selectedCountry?.kurs ?? 0
+      } else if (tierFeeValas) {
+        // No feeValas and no meaningful price: the server resolves the bracket fee
+        // from countryId and valas, and ignores anything sent for either.
+        body.countryId = countryId
+        body.valas = Number(valas) || 0
+        body.kurs = selectedCountry?.kurs ?? 0
+      } else if (type === "flat_fee") {
+        // No profitFixed and no meaningful price: the server reads the flat fee
+        // from product_defaults and ignores anything sent for either.
+        body.cost = Number(cost) || 0
       } else {
         body.cost = Number(cost) || 0
         body.profitFixed = Number(profitFixed) || 0
@@ -954,32 +1058,23 @@ function AddProductForm({
     <form ref={formRef} onSubmit={handleAdd} className="rounded-t-2xl md:rounded-xl border-x border-t border-cream-border md:border bg-white p-5 pb-8 md:pb-5 flex flex-col gap-4 scroll-mt-14">
       <div className="flex items-center gap-4 -mx-5 px-5 border-b border-cream-border pb-3 md:mx-0 md:px-0 md:border-b-0 md:pb-0">
         <span className="text-base md:text-sm font-semibold text-foreground">Add Product</span>
+        {/* Driven off PRICING_METHODS, like the edit modal's picker, so adding a
+            method does not mean adding a button here. */}
         <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs">
-          <button
-            type="button"
-            onClick={() => setType("overseas")}
-            className={`px-3 py-1 transition-colors ${type === "overseas" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
-          >
-            {PRICING_METHOD_LABEL.overseas}
-          </button>
-          <button
-            type="button"
-            onClick={() => setType("domestic")}
-            className={`px-3 py-1 transition-colors ${type === "domestic" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
-          >
-            {PRICING_METHOD_LABEL.domestic}
-          </button>
-          <button
-            type="button"
-            onClick={() => setType("tier_kurs")}
-            className={`px-3 py-1 transition-colors ${type === "tier_kurs" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
-          >
-            {PRICING_METHOD_LABEL.tier_kurs}
-          </button>
+          {PRICING_METHODS.map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setType(m)}
+              className={`px-3 py-1 whitespace-nowrap transition-colors ${type === m ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
+            >
+              {PRICING_METHOD_LABEL[m]}
+            </button>
+          ))}
         </div>
       </div>
 
-      {type === "domestic" ? (
+      {rupiahCostForm ? (
         <div className="grid grid-cols-3 gap-3">
           <div className="col-span-2">
             <Field label="Product Name">
@@ -996,7 +1091,7 @@ function AddProductForm({
         </Field>
       )}
 
-      {type === "domestic" ? (
+      {rupiahCostForm ? (
         <div className="grid grid-cols-2 gap-3">
           <Field label="Store">
             <SearchableSelect
@@ -1015,7 +1110,7 @@ function AddProductForm({
                 const v = e.target.value
                 setCost(v)
                 if (!profitManual) {
-                  setProfitFixed(String(defaultDomesticProfit(Number(v) || 0)))
+                  setProfitFixed(String(suggestRupiahFee(Number(v) || 0)))
                 }
               }}
               type="number" min="0" placeholder="0" disabled={adding} className={formInputCls}
@@ -1102,7 +1197,16 @@ function AddProductForm({
               />
             </Field>
             <Field label="Valas">
-              <input value={valas} onChange={(e) => setValas(e.target.value)} type="number" step="any" min="0" placeholder="0" disabled={adding} className={formInputCls} />
+              <div className="flex items-center gap-2">
+                <input value={valas} onChange={(e) => setValas(e.target.value)} type="number" step="any" min="0" placeholder="0" disabled={adding} className={`${formInputCls} flex-1 min-w-0`} />
+                <KursTierPopover
+                  country={selectedCountry}
+                  valas={Number(valas) || 0}
+                  tiers={kursTiers}
+                  roundTo={productDefaults?.tierKursRoundTo ?? 5000}
+                  disabled={adding}
+                />
+              </div>
             </Field>
             <Field label="Gram">
               <input value={gram} onChange={(e) => setGram(e.target.value)} type="number" min="0" placeholder="0" disabled={adding} className={formInputCls} />
@@ -1138,19 +1242,147 @@ function AddProductForm({
         </>
       )}
 
-      {type === "domestic" && (
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Fixed Profit (IDR)">
-            <input
-              value={profitFixed}
-              onChange={(e) => { setProfitFixed(e.target.value); setProfitManual(true) }}
-              type="number" min="0" placeholder="0" disabled={adding} className={formInputCls}
-            />
+      {type === "tier_fee" && (
+        <>
+          {/* The base currency. Rupiah means no country and an exact cost + fee;
+              Valas means the base and the fee are both in the country's currency and
+              the total is converted. Switching to Rupiah clears the country, because
+              that absence IS what the stored row uses to mean rupiah mode. */}
+          <Field label="Priced in">
+            <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs self-start">
+              <button
+                type="button"
+                onClick={() => { setFeeBase("rupiah"); setCountryId(null) }}
+                disabled={adding}
+                className={`px-3 py-1.5 transition-colors ${feeBase === "rupiah" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
+              >
+                Rupiah
+              </button>
+              <button
+                type="button"
+                onClick={() => setFeeBase("valas")}
+                disabled={adding}
+                className={`px-3 py-1.5 transition-colors ${feeBase === "valas" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
+              >
+                Valas
+              </button>
+            </div>
           </Field>
-          <Field label="Price">
-            <div className={`${formInputCls} bg-gray-50 text-gray-500 flex items-center`}>Rp {fmt(pricePreview.price)}</div>
-          </Field>
-        </div>
+
+          {tierFeeRupiah && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Fee (IDR)">
+                <div className="flex items-center gap-2">
+                  {/* flex-1 min-w-0: formInputCls has no width, and outside a flex-col
+                      Field it would otherwise shrink to its content. */}
+                  <input
+                    value={profitFixed}
+                    onChange={(e) => { setProfitFixed(e.target.value); setProfitManual(true) }}
+                    type="number" min="0" placeholder="0" disabled={adding}
+                    className={`${formInputCls} flex-1 min-w-0`}
+                  />
+                  <TierFeePopover
+                    base={Number(cost) || 0}
+                    entered={Number(profitFixed) || 0}
+                    brackets={scopedFeeBrackets}
+                    unit="Rp"
+                    disabled={adding}
+                  />
+                </div>
+              </Field>
+              <Field label="Price">
+                <div className={`${formInputCls} bg-gray-50 text-gray-500 flex items-center`}>Rp {fmt(pricePreview.price)}</div>
+              </Field>
+            </div>
+          )}
+
+          {tierFeeValas && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Country">
+                  <SearchableSelect
+                    value={countryId != null ? String(countryId) : ""}
+                    onChange={(v) => setCountryId(v ? Number(v) : null)}
+                    options={countries.map((c) => ({ value: String(c.id), label: `${c.name} (${c.currency})` }))}
+                    placeholder="Select country…"
+                    disabled={adding}
+                    searchable={false}
+                    alwaysShowAll
+                  />
+                </Field>
+                <Field label={`Valas${selectedCountry ? ` (${selectedCountry.currency})` : ""}`}>
+                  <div className="flex items-center gap-2">
+                    <input value={valas} onChange={(e) => setValas(e.target.value)} type="number" step="any" min="0" placeholder="0" disabled={adding} className={`${formInputCls} flex-1 min-w-0`} />
+                    <TierFeePopover
+                      base={Number(valas) || 0}
+                      brackets={scopedFeeBrackets}
+                      unit={selectedCountry?.currency ?? ""}
+                      conversion={selectedCountry ? {
+                        kurs: selectedCountry.kurs,
+                        roundTo: productDefaults?.tierKursRoundTo ?? 5000,
+                        countryName: selectedCountry.name,
+                      } : undefined}
+                      disabled={adding}
+                    />
+                  </div>
+                </Field>
+                <Field label="Gram">
+                  <input value={gram} onChange={(e) => setGram(e.target.value)} type="number" min="0" placeholder="0" disabled={adding} className={formInputCls} />
+                </Field>
+                <Field label="Price">
+                  <div className={`${formInputCls} bg-gray-50 text-gray-500 flex items-center`}>Rp {fmt(pricePreview.price)}</div>
+                </Field>
+              </div>
+
+              {selectedCountry && (
+                <div className="flex items-center justify-between gap-1 flex-nowrap whitespace-nowrap rounded-lg bg-gray-50 border border-cream-border px-3 py-3 text-[9px] md:text-xs text-gray-500">
+                  <span>RATE: {fmt(selectedCountry.kurs)}</span>
+                  <span>FEE: {fmt(Math.round(valasFee * 100) / 100)} {selectedCountry.currency}</span>
+                  <span>COST: {fmt(Math.round(pricePreview.cogs))}</span>
+                  <span className={`font-semibold ${pricePreview.price - pricePreview.cogs >= 0 ? "text-green-700" : "text-red-600"}`}>
+                    PROFIT: Rp {fmt(Math.round(pricePreview.price - pricePreview.cogs))}
+                  </span>
+                </div>
+              )}
+
+              {selectedCountry && (scopedFeeBrackets?.length ?? 0) === 0 && (
+                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  No Tier Fee brackets for {selectedCountry.name}, so the fee is 0 and this
+                  product is priced at cost. Add them in Settings → Pricing.
+                </p>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      {/* Flat Fee has no fee input by design — the fee is one Settings value and the
+          server resolves it on save. Showing it read-only, rather than not at all,
+          so the price is not an unexplained number. */}
+      {type === "flat_fee" && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Flat Fee (IDR)">
+              <div className={`${formInputCls} bg-gray-50 text-gray-500 flex items-center`}>Rp {fmt(flatFee)}</div>
+            </Field>
+            <Field label="Price">
+              <div className={`${formInputCls} bg-gray-50 text-gray-500 flex items-center`}>Rp {fmt(pricePreview.price)}</div>
+            </Field>
+          </div>
+          <div className="flex items-center justify-between gap-1 flex-nowrap whitespace-nowrap rounded-lg bg-gray-50 border border-cream-border px-3 py-3 text-[9px] md:text-xs text-gray-500">
+            <span>COST: {fmt(Math.round(pricePreview.cogs))}</span>
+            <span>FEE: {fmt(flatFee)}</span>
+            <span className={`font-semibold ${flatFee >= 0 ? "text-green-700" : "text-red-600"}`}>
+              PROFIT: Rp {fmt(flatFee)}
+            </span>
+          </div>
+          {flatFee === 0 && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              The flat fee is 0, so this product would be priced at cost with no
+              margin. Set it under Settings → Pricing.
+            </p>
+          )}
+        </>
       )}
 
       <div className="flex items-center justify-end">
@@ -1340,6 +1572,8 @@ function EditProductModal({
 }) {
   const productDefaults = useProductDefaults()
   const { tiers: kursTiers } = useKursTiers()
+  // Read-only here — see the Tier Fee fields below.
+  const { brackets: tierFeeBrackets } = useTierFeeBrackets()
   const [draft, setDraft] = useState({
     name: row.name,
     store: row.store,
@@ -1359,6 +1593,20 @@ function EditProductModal({
   const draftCountry = countries.find((c) => c.id === draft.countryId)
   const draftAbroad = draft.method === "overseas"
   const draftTierKurs = draft.method === "tier_kurs"
+  const draftFlatFee = draft.method === "flat_fee"
+  // Tier Fee's mode is whether it has a country — that IS the stored discriminator,
+  // so the modal needs no extra toggle: clearing the Country field switches to rupiah.
+  const draftTierFeeValas = draft.method === "tier_fee" && draft.countryId != null
+  const draftTierFeeRupiah = draft.method === "tier_fee" && draft.countryId == null
+  const draftFeeBrackets = tierFeeBrackets
+    ? bracketsForScope(tierFeeBrackets, draftTierFeeValas ? draft.countryId : null)
+    : null
+  const draftValasFee = draftTierFeeValas
+    ? resolveTierFee(draftFeeBrackets ?? [], Number(draft.valas) || 0)
+    : 0
+  // Settings owns the flat fee and the server re-reads it on save; this only feeds
+  // the preview and the optimistic row patch.
+  const flatFee = productDefaults?.flatFee ?? DEFAULT_PRODUCT_DEFAULTS.flatFee
 
   // The rate this valas would be charged, re-resolved as it is edited. Falls back
   // to the row's own snapshot when there is no country to resolve against, so an
@@ -1396,9 +1644,22 @@ function EditProductModal({
       })
       return { price, cogs: Math.round(cogs), profit: tierKursProfit({ price, cogs }) }
     }
-    return { price: calcDomesticPrice(Number(draft.cost) || 0, Number(draft.profitFixed) || 0), cogs: null, profit: null }
-  }, [draft, draftAbroad, draftTierKurs, draftChargedKurs, draftCountry, row.kurs,
-      row.cargoPerKg, productDefaults])
+    if (draftTierFeeValas) {
+      const { cogs, price } = calcTierFeeValasPrice({
+        valas: Number(draft.valas) || 0,
+        feeValas: draftValasFee,
+        kurs: draftCountry?.kurs ?? row.kurs,
+        roundTo: productDefaults?.tierKursRoundTo ?? 5000,
+      })
+      return { price, cogs: Math.round(cogs), profit: Math.round(price - cogs) }
+    }
+    if (draftFlatFee) {
+      const base = Number(draft.cost) || 0
+      return { price: calcRupiahFeePrice(base, flatFee), cogs: base, profit: flatFee }
+    }
+    return { price: calcRupiahFeePrice(Number(draft.cost) || 0, Number(draft.profitFixed) || 0), cogs: null, profit: null }
+  }, [draft, draftAbroad, draftTierKurs, draftFlatFee, draftTierFeeValas, draftValasFee,
+      draftChargedKurs, draftCountry, row.kurs, row.cargoPerKg, productDefaults, flatFee])
 
   async function handleSave() {
     setSaving(true)
@@ -1411,15 +1672,20 @@ function EditProductModal({
         gram: Number(draft.gram) || 0,
         pricingMethod: draft.method,
         countryId: draft.countryId,
-        // valas and kurs are read by BOTH overseas and tier_kurs.
-        valas: draft.method !== "domestic" ? Number(draft.valas) || 0 : 0,
-        kurs: draft.method !== "domestic" ? (draftCountry?.kurs ?? row.kurs) : 0,
+        // valas and kurs are read by BOTH overseas and tier_kurs — and by neither
+        // of the two cost-based methods, so key on needing a country rather than on
+        // "not the rupiah methods", which would drag a country onto a Flat Fee row.
+        valas: methodAllowsCountry(draft.method) ? Number(draft.valas) || 0 : 0,
+        kurs: methodAllowsCountry(draft.method) ? (draftCountry?.kurs ?? row.kurs) : 0,
         cargoPerKg: draftAbroad ? (draftCountry?.cargoPerKg ?? row.cargoPerKg) : 0,
         profitPct: draftAbroad ? Number(draft.profitPct) || 0 : 0,
         operationalFee: draftAbroad ? Number(draft.opFee) || 0 : 5000,
         packingFee: draftAbroad ? Number(draft.packFee) || 0 : 5000,
-        cost: draft.method === "domestic" ? Number(draft.cost) || 0 : 0,
-        profitFixed: draft.method === "domestic" ? Number(draft.profitFixed) || 0 : 0,
+        cost: draftTierFeeRupiah || draftFlatFee ? Number(draft.cost) || 0 : 0,
+        // Sent for rupiah-mode Tier Fee only. For flat_fee and valas-mode Tier Fee the
+        // server resolves the fee and ignores this, so sending one would imply
+        // otherwise.
+        profitFixed: draftTierFeeRupiah ? Number(draft.profitFixed) || 0 : 0,
       }
 
       const res = await fetch(`/api/sheets/products/${row.id}`, {
@@ -1448,7 +1714,11 @@ function EditProductModal({
         operationalFee: Number(body.operationalFee) || 0,
         packingFee: Number(body.packingFee) || 0,
         cost: Number(body.cost) || 0,
-        profitFixed: Number(body.profitFixed) || 0,
+        // Mirrors the server: the resolved flat fee lands in profit_fixed, so the
+        // Tier Fee cell shows it immediately instead of a 0 until the next refresh.
+        profitFixed: draftFlatFee ? flatFee : Number(body.profitFixed) || 0,
+        // Mirrors the server: non-null only in valas mode.
+        feeValas: draftTierFeeValas ? draftValasFee : null,
       })
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Failed to save")
@@ -1518,7 +1788,7 @@ function EditProductModal({
                   method: m,
                   // Domestic has no country; the other two require one, so carry
                   // the row's original rather than leaving it null.
-                  countryId: m === "domestic" ? null : (d.countryId ?? row.countryId),
+                  countryId: methodNeedsCountry(m) ? (d.countryId ?? row.countryId) : null,
                 }))}
                 className={`flex-1 px-3 py-1.5 transition-colors ${draft.method === m ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
               >
@@ -1528,7 +1798,7 @@ function EditProductModal({
           </div>
         </Field>
 
-        {draft.method !== "domestic" ? (
+        {methodAllowsCountry(draft.method) ? (
           <div className="grid grid-cols-2 gap-3">
             <Field label="Country">
               <SearchableSelect
@@ -1543,7 +1813,20 @@ function EditProductModal({
               />
             </Field>
             <Field label="Valas">
-              <input value={draft.valas} onChange={(e) => setDraft((d) => ({ ...d, valas: e.target.value }))} type="number" step="any" min="0" disabled={saving} className={formInputCls} />
+              {/* This field is shared with Profit Margin, which has no brackets, so
+                  the popover only appears for Tier Kurs. */}
+              <div className="flex items-center gap-2">
+                <input value={draft.valas} onChange={(e) => setDraft((d) => ({ ...d, valas: e.target.value }))} type="number" step="any" min="0" disabled={saving} className={`${formInputCls} flex-1 min-w-0`} />
+                {draftTierKurs && (
+                  <KursTierPopover
+                    country={draftCountry}
+                    valas={Number(draft.valas) || 0}
+                    tiers={kursTiers}
+                    roundTo={productDefaults?.tierKursRoundTo ?? 5000}
+                    disabled={saving}
+                  />
+                )}
+              </div>
             </Field>
           </div>
         ) : null}
@@ -1633,21 +1916,118 @@ function EditProductModal({
           </>
         )}
 
-        {/* Gated on domestic explicitly, not on `!draftAbroad`: that would also
-            catch tier_kurs and render the cost/fixed-profit inputs for it. */}
-        {draft.method === "domestic" && (
+        {/* Rupiah mode: no country, so a rupiah base cost and a typed fee. Gated on
+            the mode explicitly, not on `!draftAbroad`, which would also catch
+            tier_kurs and render these inputs for it. */}
+        {draftTierFeeRupiah && (
           <div className="grid grid-cols-2 gap-3">
             <Field label="Base Cost">
               <input value={draft.cost} onChange={(e) => setDraft((d) => ({ ...d, cost: e.target.value }))} type="number" min="0" disabled={saving} className={formInputCls} />
             </Field>
-            <Field label="Fixed Profit">
-              <input value={draft.profitFixed} onChange={(e) => setDraft((d) => ({ ...d, profitFixed: e.target.value }))} type="number" min="0" disabled={saving} className={formInputCls} />
+            <Field label="Fee">
+              <div className="flex items-center gap-2">
+                <input value={draft.profitFixed} onChange={(e) => setDraft((d) => ({ ...d, profitFixed: e.target.value }))} type="number" min="0" disabled={saving} className={`${formInputCls} flex-1 min-w-0`} />
+                {/* Read-only here: the edit modal never re-derives the fee, so this
+                    explains what the brackets WOULD charge without changing it. */}
+                <TierFeePopover
+                  base={Number(draft.cost) || 0}
+                  entered={Number(draft.profitFixed) || 0}
+                  brackets={draftFeeBrackets}
+                  unit="Rp"
+                  disabled={saving}
+                />
+              </div>
             </Field>
             <Field label="Gram">
               <input value={draft.gram} onChange={(e) => setDraft((d) => ({ ...d, gram: e.target.value }))} type="number" min="0" disabled={saving} className={formInputCls} />
             </Field>
             {calcSummary}
           </div>
+        )}
+
+        {/* Valas mode: the Country + Valas row above supplies the inputs, so all this
+            adds is the resolved fee, the price, and the arithmetic between them. The
+            fee is NOT an input — the server resolves it from the brackets. */}
+        {draftTierFeeValas && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label={`Fee (${draftCountry?.currency ?? ""})`}>
+                <div className="flex items-center gap-2">
+                  <div className={`${formInputCls} bg-gray-50 text-gray-400 cursor-not-allowed flex items-center flex-1 min-w-0`}>
+                    {fmt(Math.round(draftValasFee * 100) / 100)}
+                  </div>
+                  <TierFeePopover
+                    base={Number(draft.valas) || 0}
+                    brackets={draftFeeBrackets}
+                    unit={draftCountry?.currency ?? ""}
+                    conversion={draftCountry ? {
+                      kurs: draftCountry.kurs,
+                      roundTo: productDefaults?.tierKursRoundTo ?? 5000,
+                      countryName: draftCountry.name,
+                    } : undefined}
+                    disabled={saving}
+                  />
+                </div>
+              </Field>
+              <Field label="Gram">
+                <input value={draft.gram} onChange={(e) => setDraft((d) => ({ ...d, gram: e.target.value }))} type="number" min="0" disabled={saving} className={formInputCls} />
+              </Field>
+              <div className="col-span-2">
+                <Field label="Price">
+                  <div className={`${formInputCls} bg-gray-50 text-gray-500 flex items-center`}>Rp {fmt(editCalc.price)}</div>
+                </Field>
+              </div>
+            </div>
+
+            {draftCountry && (
+              <div className="flex items-center justify-between gap-1 flex-nowrap whitespace-nowrap rounded-lg bg-gray-50 border border-cream-border px-3 py-3 text-[8px] md:text-[9px] text-gray-500">
+                <span>RATE: {fmt(draftCountry.kurs)}</span>
+                <span>FEE: {fmt(Math.round(draftValasFee * 100) / 100)} {draftCountry.currency}</span>
+                <span>COGS: Rp {fmt(editCalc.cogs ?? 0)}</span>
+                <span className="text-green-700 font-semibold">PROFIT: Rp {fmt(editCalc.profit ?? 0)}</span>
+              </div>
+            )}
+
+            {row.feeValas != null && Math.abs(row.feeValas - draftValasFee) > 1e-9 && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                This product was priced with a fee of {fmt(row.feeValas)}{" "}
+                {draftCountry?.currency ?? ""}. Saving will reprice it at the current{" "}
+                {fmt(Math.round(draftValasFee * 100) / 100)}.
+              </p>
+            )}
+          </>
+        )}
+
+        {/* No fee input: the fee is one Settings value, resolved server-side on
+            save. Shown read-only so the price isn't unexplained. */}
+        {draftFlatFee && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Base Cost">
+                <input value={draft.cost} onChange={(e) => setDraft((d) => ({ ...d, cost: e.target.value }))} type="number" min="0" disabled={saving} className={formInputCls} />
+              </Field>
+              <Field label="Flat Fee">
+                <div
+                  title="Set under Settings → Pricing. Applies to every Flat Fee product on its next save."
+                  className={`${formInputCls} bg-gray-50 text-gray-400 cursor-not-allowed flex items-center`}
+                >
+                  Rp {fmt(flatFee)}
+                </div>
+              </Field>
+              <Field label="Gram">
+                <input value={draft.gram} onChange={(e) => setDraft((d) => ({ ...d, gram: e.target.value }))} type="number" min="0" disabled={saving} className={formInputCls} />
+              </Field>
+              <Field label="Price">
+                <div className={`${formInputCls} bg-gray-50 text-gray-500 flex items-center`}>Rp {fmt(editCalc.price)}</div>
+              </Field>
+            </div>
+            {Number(row.profitFixed) !== flatFee && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                This product was priced with a fee of Rp {fmt(row.profitFixed)}. Saving
+                will reprice it at the current Rp {fmt(flatFee)}.
+              </p>
+            )}
+          </>
         )}
 
         <div className="flex items-center pt-2">

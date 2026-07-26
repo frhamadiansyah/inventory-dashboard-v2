@@ -64,20 +64,23 @@ async function main() {
   for (const m of methods) {
     console.log(`  ${m.pricing_method.padEnd(10)} ${String(m.n).padStart(5)} rows, ${m.with_country} with a country`)
   }
-  const domesticWithCountry = methods.find((m) => m.pricing_method === "domestic")?.with_country ?? 0
+  // A country on a tier_fee row is NOT a fault — since migration 053 that is exactly
+  // what selects its valas mode. flat_fee is the only method that must never carry
+  // one: its fee is a single rupiah setting, so a country would be silently ignored.
+  const flatFeeWithCountry = methods.find((m) => m.pricing_method === "flat_fee")?.with_country ?? 0
   const [{ n: overseasNoCountry }] = (await sql`
     SELECT COUNT(*)::int AS n FROM products
      WHERE pricing_method IN ('overseas', 'tier_kurs') AND country_id IS NULL
   `) as unknown as { n: number }[]
   let structural = 0
-  if (domesticWithCountry > 0) {
-    console.log(`  ❌ ${domesticWithCountry} domestic row(s) have a country — the formula ignores it`)
+  if (flatFeeWithCountry > 0) {
+    console.log(`  ❌ ${flatFeeWithCountry} Flat Fee row(s) have a country — the formula ignores it`)
     structural++
   }
   if (overseasNoCountry > 0) {
     console.log(`  ⚠️  ${overseasNoCountry} overseas/tier_kurs row(s) have NO country, so they price at 0 inputs`)
   }
-  if (structural === 0) console.log("  ✅ no domestic row carries a country")
+  if (structural === 0) console.log("  ✅ no Flat Fee row carries a country")
 
   // ── Tier Kurs rows ───────────────────────────────────────────────────────
   const rows = (await sql`

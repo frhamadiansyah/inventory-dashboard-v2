@@ -13,6 +13,7 @@ import {
 import { DEFAULT_BUSINESS_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import { DEFAULT_PRODUCT_DEFAULTS, type ProductDefaults } from "@/lib/product-defaults"
 import KursTiersSection from "./KursTiersSection"
+import TierFeeBracketsSection from "./TierFeeBracketsSection"
 
 const TEMPLATE_LABELS: Record<TemplateKey, string> = {
   invoice: "Invoice message",
@@ -126,10 +127,12 @@ export default function SettingsClient() {
       <div className={tab === "business" ? "" : "hidden"}>
         <BusinessProfileSection />
       </div>
-      {/* Both cards are pricing config, so they share one tab. Product defaults
-          first — it owns the rounding step the bracket readout below reports. */}
+      {/* All three cards are pricing config, so they share one tab. Product
+          defaults first — it owns the rounding step the Tier Kurs readout reports —
+          then one card per bracketed method, in PRICING_METHODS order. */}
       <div className={`flex flex-col gap-6 ${tab === "product-defaults" ? "" : "hidden"}`}>
         <ProductDefaultsSection />
+        <TierFeeBracketsSection />
         <KursTiersSection />
       </div>
       <div className={`flex flex-col gap-6 ${tab === "messages" ? "" : "hidden"}`}>
@@ -440,10 +443,24 @@ function ProductDefaultsSection() {
               onChange={(e) => field("tierKursRoundTo", e.target.value)}
               className={fieldInputCls}
             />
-            {/* The only field in this card that is not merely a form pre-fill —
-                it is read when a Tier Kurs price is computed. */}
+            {/* One of two fields in this card that are not merely form pre-fills —
+                both are read when a price is computed. */}
             <span className="text-[10px] text-gray-400">
               Prices round UP to this step. Applies on a product&apos;s next save.
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Flat Fee</span>
+            <input
+              type="number"
+              min="0"
+              value={defaults.flatFee}
+              onChange={(e) => field("flatFee", e.target.value)}
+              className={fieldInputCls}
+            />
+            <span className="text-[10px] text-gray-400">
+              Every Flat Fee product is priced base cost + this. Applies on a
+              product&apos;s next save.
             </span>
           </label>
         </div>

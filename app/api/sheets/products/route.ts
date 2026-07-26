@@ -60,9 +60,9 @@ export async function POST(req: NextRequest) {
     const countryId = body.countryId != null ? Number(body.countryId) : null
 
     const result = await withActor(session.user.email, async (tx) => {
-      // Tier Kurs is recomputed server-side: body.price and body.tieredKurs are
-      // ignored and the bracket rate is looked up here. The other two methods keep
-      // storing the client-computed price.
+      // Tier Kurs and Flat Fee are recomputed server-side: their margin inputs
+      // (the bracket rate, the flat fee) are looked up here and the body's are
+      // ignored. Profit Margin and Tier Fee keep storing the client-computed price.
       const priced = await computeProductPrice({ pricingMethod, countryId, body, db: tx })
 
       return addProduct({
@@ -74,12 +74,14 @@ export async function POST(req: NextRequest) {
         valas: Number(body.valas) || 0,
         kurs: Number(body.kurs) || 0,
         tieredKurs: priced.tieredKurs,
+        feeValas: priced.feeValas,
         cargoPerKg: Number(body.cargoPerKg) || 0,
         profitPct: Number(body.profitPct) || 0,
         operationalFee: Number(body.operationalFee ?? 5000),
         packingFee: Number(body.packingFee ?? 5000),
         cost: Number(body.cost) || 0,
-        profitFixed: Number(body.profitFixed) || 0,
+        // Server-resolved for flat_fee, the body's own value otherwise.
+        profitFixed: priced.profitFixed ?? (Number(body.profitFixed) || 0),
         pricingMethod,
       }, tx)
     })

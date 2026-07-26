@@ -33,9 +33,16 @@ export async function PATCH(req: NextRequest) {
     const packingFee = Number(body.packingFee)
     const markupPct = Number(body.markupPct)
     const tierKursRoundTo = Number(body.tierKursRoundTo)
+    const flatFee = Number(body.flatFee)
 
     if (!Number.isFinite(profitPct) || !Number.isFinite(operationalFee) || !Number.isFinite(packingFee) || !Number.isFinite(markupPct)) {
       return NextResponse.json({ error: "profitPct, operationalFee, packingFee and markupPct must be numbers" }, { status: 400 })
+    }
+    // Guarded separately from the pre-fill fields: this one is a price input, and
+    // it lands in an INTEGER column with a CHECK (>= 0). 0 is legal — it prices a
+    // Flat Fee product at cost.
+    if (!Number.isInteger(flatFee) || flatFee < 0) {
+      return NextResponse.json({ error: "flatFee must be a whole number of 0 or more" }, { status: 400 })
     }
     // Guarded separately: it divides in ceilTo(), and a 0 or negative step would
     // be a runtime hazard rather than just a bad default. The DB has a matching
@@ -45,7 +52,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     await withActor(session.user.email, (tx) =>
-      updateProductDefaults({ profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo }, tx),
+      updateProductDefaults({ profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo, flatFee }, tx),
     )
     invalidate("product-defaults")
     return NextResponse.json({ ok: true })
