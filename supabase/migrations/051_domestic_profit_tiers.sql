@@ -21,6 +21,22 @@
 -- which IS authoritative and is resolved server-side on every save.
 
 -- ─── 1. The brackets ───────────────────────────────────────────────────────
+--
+-- NOTE FOR RE-RUNS: migration 053 renames this table to tier_fee_brackets, which
+-- makes the IF NOT EXISTS below useless — the old name is gone, so a re-run would
+-- create a second, empty, stale table and re-seed it. Guarded on EITHER name
+-- existing so that cannot happen. Production migrations here are applied by hand, so
+-- "nobody would run an old migration again" is not a safe assumption.
+
+DO $$
+BEGIN
+IF EXISTS (
+  SELECT 1 FROM information_schema.tables
+   WHERE table_schema = 'public' AND table_name IN ('domestic_profit_tiers', 'tier_fee_brackets')
+) THEN
+  RAISE NOTICE 'tier fee brackets already exist (under either name) — skipping 051';
+  RETURN;
+END IF;
 
 CREATE TABLE IF NOT EXISTS domestic_profit_tiers (
   id           SERIAL PRIMARY KEY,
@@ -51,25 +67,22 @@ CREATE TABLE IF NOT EXISTS domestic_profit_tiers (
 -- for it to disagree on. (scripts/dryrun-domestic-tiers.ts sweeps every integer cost
 -- from 0 to 1.200.000 and asserts the two agree on all of them.)
 --
--- Guarded on the table being empty rather than ON CONFLICT DO NOTHING: re-running
--- the migration must not resurrect a bracket the owner deliberately deleted.
+-- Guarded on the table not existing at all (see section 1) rather than ON CONFLICT DO
+-- NOTHING: re-running the migration must not resurrect a bracket the owner
+-- deliberately deleted.
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM domestic_profit_tiers) THEN
-    INSERT INTO domestic_profit_tiers (min_cost, profit_mode, profit_value) VALUES
-      (     0, 'fixed',    5000),
-      ( 28001, 'fixed',   10000),
-      ( 98001, 'fixed',   20000),
-      (198001, 'fixed',   25000),
-      (298001, 'fixed',   35000),
-      (398001, 'fixed',   45000),
-      (498001, 'fixed',   55000),
-      (700000, 'fixed',   80000),
-      (800000, 'percent',    15);
-  END IF;
-END
-$$;
+-- Reached only when the table was just created, so it is empty by construction and
+-- needs no further guard.
+INSERT INTO domestic_profit_tiers (min_cost, profit_mode, profit_value) VALUES
+  (     0, 'fixed',    5000),
+  ( 28001, 'fixed',   10000),
+  ( 98001, 'fixed',   20000),
+  (198001, 'fixed',   25000),
+  (298001, 'fixed',   35000),
+  (398001, 'fixed',   45000),
+  (498001, 'fixed',   55000),
+  (700000, 'fixed',   80000),
+  (800000, 'percent',    15);
 
 -- No product row is touched: this table feeds a form default, and every stored
 -- price and profit_fixed stays exactly as it was.
@@ -79,7 +92,9 @@ $$;
 -- Postgres has no CREATE TRIGGER IF NOT EXISTS. No GRANT needed — migration 019's
 -- ALTER DEFAULT PRIVILEGES covers new tables and sequences for app_runtime.
 
-DROP TRIGGER IF EXISTS audit_domestic_profit_tiers ON domestic_profit_tiers;
-CREATE TRIGGER audit_domestic_profit_tiers
+EXECUTE 'DROP TRIGGER IF EXISTS audit_domestic_profit_tiers ON domestic_profit_tiers';
+EXECUTE 'CREATE TRIGGER audit_domestic_profit_tiers
   AFTER INSERT OR UPDATE OR DELETE ON domestic_profit_tiers
-  FOR EACH ROW EXECUTE FUNCTION audit.log_change();
+  FOR EACH ROW EXECUTE FUNCTION audit.log_change()';
+END
+$$;

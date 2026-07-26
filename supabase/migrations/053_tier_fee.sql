@@ -35,6 +35,7 @@
 -- list 'tier_fee', so updating first fails on its own rows.
 ALTER TABLE products DROP CONSTRAINT IF EXISTS products_pricing_method_check;
 
+-- Re-runnable: the second time, no row still says 'domestic'.
 UPDATE products SET pricing_method = 'tier_fee' WHERE pricing_method = 'domestic';
 
 ALTER TABLE products ADD CONSTRAINT products_pricing_method_check
@@ -74,12 +75,31 @@ $$;
 -- uses — rupiah cost for the NULL-country set, valas for a country's set. Renamed so
 -- nobody reads "cost" and assumes rupiah. profit_* likewise: the value is a fee, and
 -- for a percent row it is a percentage of the base.
-ALTER TABLE tier_fee_brackets RENAME COLUMN min_cost     TO min_base;
-ALTER TABLE tier_fee_brackets RENAME COLUMN profit_mode  TO fee_mode;
-ALTER TABLE tier_fee_brackets RENAME COLUMN profit_value TO fee_value;
+--
+-- Guarded, because Postgres has no RENAME COLUMN IF EXISTS and this project applies
+-- migrations to production BY HAND in the SQL editor. An unguarded rename makes a
+-- re-run — or a resumed partial run — fail with "column min_cost does not exist"
+-- somewhere in the middle, which is the worst place for a migration to stop.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'tier_fee_brackets' AND column_name = 'min_cost') THEN
+    ALTER TABLE tier_fee_brackets RENAME COLUMN min_cost TO min_base;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'tier_fee_brackets' AND column_name = 'profit_mode') THEN
+    ALTER TABLE tier_fee_brackets RENAME COLUMN profit_mode TO fee_mode;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'tier_fee_brackets' AND column_name = 'profit_value') THEN
+    ALTER TABLE tier_fee_brackets RENAME COLUMN profit_value TO fee_value;
+  END IF;
+END
+$$;
 
 -- min_base is NUMERIC now, not INTEGER: a valas floor can be fractional, where a
--- rupiah one cannot. Widening keeps every existing row valid.
+-- rupiah one cannot. Widening keeps every existing row valid, and re-running is a
+-- no-op.
 ALTER TABLE tier_fee_brackets ALTER COLUMN min_base TYPE NUMERIC(14,2);
 
 -- NULL = the rupiah set. CASCADE because a country's brackets are meaningless

@@ -853,8 +853,15 @@ function AddProductForm({
   const rupiahCostForm = tierFeeRupiah || type === "flat_fee"
 
   // Scoped brackets for whichever mode is active, and the fee they yield.
-  const feeScope = tierFeeValas ? (countryId ?? null) : null
-  const scopedFeeBrackets = tierFeeBrackets ? bracketsForScope(tierFeeBrackets, feeScope) : null
+  // Valas mode with no country yet has NO scope — not the rupiah one. Resolving
+  // `countryId ?? null` would hand back the rupiah brackets and present their rupiah
+  // values as foreign-currency fees.
+  const feeScopeUnset = tierFeeValas && countryId == null
+  const scopedFeeBrackets = feeScopeUnset
+    ? []
+    : tierFeeBrackets
+      ? bracketsForScope(tierFeeBrackets, tierFeeValas ? countryId : null)
+      : null
   const valasFee = tierFeeValas ? resolveTierFee(scopedFeeBrackets ?? [], Number(valas) || 0) : 0
 
   const suggestRupiahFee = (cost: number) =>
@@ -1345,6 +1352,13 @@ function AddProductForm({
                 </div>
               )}
 
+              {feeScopeUnset && (
+                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Select a country: a valas fee is denominated in its currency and
+                  converted at its rate, so neither is known yet.
+                </p>
+              )}
+
               {selectedCountry && (scopedFeeBrackets?.length ?? 0) === 0 && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                   No Tier Fee brackets for {selectedCountry.name}, so the fee is 0 and this
@@ -1395,7 +1409,8 @@ function AddProductForm({
           )}
           <button
             type="submit"
-            disabled={adding}
+            disabled={adding || feeScopeUnset}
+            title={feeScopeUnset ? "Select a country, or switch Priced in to Rupiah" : undefined}
             className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/90 disabled:opacity-50 transition-colors"
           >
             {adding ? "Saving…" : "Add"}

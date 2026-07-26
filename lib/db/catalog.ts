@@ -206,6 +206,12 @@ export async function getProductsPaginated(opts: {
     else if (t.includes("over") || t.includes("abroad") || t.includes("margin")) {
       conditions.push("p.pricing_method = 'overseas'")
     }
+    // "tier" alone is ambiguous between the two Tier methods. Narrow to both rather
+    // than falling through, which would silently ignore the filter and return every
+    // row — worse than an imprecise answer.
+    else if (t.includes("tier")) {
+      conditions.push("p.pricing_method IN ('tier_fee', 'tier_kurs')")
+    }
   }
   // valas / gram default to 0 (never null in practice), so "blank" = 0.
   if (valas === "filled") conditions.push("COALESCE(p.valas, 0) <> 0")
