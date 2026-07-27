@@ -80,7 +80,7 @@ export async function updateBusinessProfile(data: BusinessProfile, db: DBExecuto
 export async function getProductDefaults(): Promise<ProductDefaults> {
   const [row] = await sql`
     SELECT profit_pct, operational_fee, packing_fee, markup_pct, tier_kurs_round_to, flat_fee,
-           flat_fee_pct, flat_fee_min
+           flat_fee_pct, flat_fee_min, default_country_id
     FROM product_defaults WHERE id = 1
   `
   if (!row) return DEFAULT_PRODUCT_DEFAULTS
@@ -96,15 +96,19 @@ export async function getProductDefaults(): Promise<ProductDefaults> {
     // Same reasoning: 0 is legal, so no `||` default.
     flatFeePct: Number(row.flat_fee_pct) || 0,
     flatFeeMin: Number(row.flat_fee_min) || 0,
+    // NOT `|| null`: null means "start on IDR", and 0 is not a country id anybody has, so the
+    // two must stay distinguishable.
+    defaultCountryId: row.default_country_id != null ? Number(row.default_country_id) : null,
   }
 }
 
 export async function updateProductDefaults(data: ProductDefaults, db: DBExecutor = sql): Promise<void> {
   await db`
     INSERT INTO product_defaults (id, profit_pct, operational_fee, packing_fee, markup_pct,
-      tier_kurs_round_to, flat_fee, flat_fee_pct, flat_fee_min, updated_at)
+      tier_kurs_round_to, flat_fee, flat_fee_pct, flat_fee_min, default_country_id, updated_at)
     VALUES (1, ${data.profitPct}, ${data.operationalFee}, ${data.packingFee}, ${data.markupPct},
-      ${data.tierKursRoundTo}, ${data.flatFee}, ${data.flatFeePct}, ${data.flatFeeMin}, NOW())
+      ${data.tierKursRoundTo}, ${data.flatFee}, ${data.flatFeePct}, ${data.flatFeeMin},
+      ${data.defaultCountryId}, NOW())
     ON CONFLICT (id) DO UPDATE SET
       profit_pct = EXCLUDED.profit_pct,
       operational_fee = EXCLUDED.operational_fee,
@@ -114,6 +118,7 @@ export async function updateProductDefaults(data: ProductDefaults, db: DBExecuto
       flat_fee = EXCLUDED.flat_fee,
       flat_fee_pct = EXCLUDED.flat_fee_pct,
       flat_fee_min = EXCLUDED.flat_fee_min,
+      default_country_id = EXCLUDED.default_country_id,
       updated_at = NOW()
   `
 }

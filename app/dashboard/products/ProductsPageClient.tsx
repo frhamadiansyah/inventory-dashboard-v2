@@ -859,7 +859,11 @@ function AddProductForm({
   const [type, setType] = useState<PricingMethod>("overseas")
   const [name, setName] = useState("")
   const [store, setStore] = useState("")
-  const [countryId, setCountryId] = useState<number | null>(countries[0]?.id ?? null)
+  // Starts empty and is set from product_defaults.default_country_id by the effect below. It
+  // used to initialise to countries[0] — the alphabetically first country, which moved whenever
+  // one was renamed. Migration 052 seeded that same country as the default, so the field lands
+  // where it always did until the owner picks another.
+  const [countryId, setCountryId] = useState<number | null>(null)
   const [valas, setValas] = useState("")
   const [gram, setGram] = useState("")
   const [profitPct, setProfitPct] = useState("30")
@@ -927,6 +931,14 @@ function AddProductForm({
     )
 
 
+  // Set once, when the settings arrive. The ref is what makes it once-only: without it, every
+  // refetch would overwrite whatever the user had typed.
+  //
+  // It is also set by the duplicate effect below, which is load-bearing. Both this and the
+  // duplicate populate the same fields, and the duplicate can win the race — a user who clicks
+  // Duplicate before this fetch resolves had their copied profit %, fees and country silently
+  // replaced by the Settings values a moment later. Consuming the seed clears it, so the `seed`
+  // guard alone does not prevent that.
   const defaultsAppliedRef = useRef(false)
   useEffect(() => {
     if (defaultsAppliedRef.current || !productDefaults || seed) return
@@ -934,6 +946,9 @@ function AddProductForm({
     setProfitPct(String(productDefaults.profitPct))
     setOpFee(String(productDefaults.operationalFee))
     setPackFee(String(productDefaults.packingFee))
+    // null is a real value here — "start on IDR (Rupiah)" — so it is assigned as-is rather than
+    // falling back to a country.
+    setCountryId(productDefaults.defaultCountryId)
   }, [productDefaults, seed])
 
   // Duplicate flow: when a seed product arrives, copy its fields into local
@@ -946,48 +961,59 @@ function AddProductForm({
     if (!seed) return
     // Copy the method straight off the seed. Re-deriving it from countryId would
     // silently turn a duplicated Tier Kurs product into an Overseas one.
+    // A duplicate is fully populated, so the Settings defaults must not be applied over it —
+    // see defaultsAppliedRef above. Set here rather than in a cleanup, because the seed is
+    // consumed immediately below and the flag has to outlive it.
+    defaultsAppliedRef.current = true
     setType(seed.pricingMethod)
     setName(seed.name)
     setStore(seed.store ?? "")
     setGram(String(seed.gram ?? 0))
-    if (seed.pricingMethod === "overseas") {
-      setCountryId(seed.countryId)
-      setValas(String(seed.valas ?? 0))
-      setProfitPct(String(seed.profitPct ?? 0))
-      setOpFee(String(seed.operationalFee ?? 5000))
-      setPackFee(String(seed.packingFee ?? 5000))
-    } else if (seed.pricingMethod === "tier_kurs") {
-      // No rate copied: the bracket is re-resolved from the duplicated valas, so a
-      // stale snapshot can't ride along into the new product.
-      setCountryId(seed.countryId)
-      setValas(String(seed.valas ?? 0))
-    } else if (seed.pricingMethod === "tier_fee" && seed.countryId != null) {
-      // Valas mode, which the country alone establishes. Fee deliberately not copied, as
-      // with the tiered rate above: the server re-resolves it, so a duplicate must not
-      // carry a stale snapshot.
-      setCountryId(seed.countryId)
-      setValas(String(seed.valas ?? 0))
-    } else if (seed.pricingMethod === "tier_fee") {
-      // Rupiah mode: no country, which is what the stored row means by it.
-      setCountryId(null)
-      setCost(String(seed.cost ?? 0))
-      setProfitFixed(String(seed.profitFixed ?? 0))
-      setProfitManual(true)
-    } else if (seed.pricingMethod === "flat_fee") {
-      // Fee deliberately not copied, for the same reason as the tiered rate above:
-      // the server re-reads it, so a duplicate must not carry a stale snapshot.
-      //
-      // The country comes along because it decides rupiah vs valas, and the percent flag
-      // because it decides how the fee is expressed. Cost is re-derived from valas on save,
-      // so copying the stored cost only matters in rupiah mode.
-      setFlatFeeMode(seed.flatFeeMode)
-      setCountryId(seed.countryId)
-      setValas(String(seed.valas ?? 0))
-      setCost(String(seed.cost ?? 0))
-    } else {
-      setCost(String(seed.cost ?? 0))
-      setProfitFixed(String(seed.profitFixed ?? 0))
-      setProfitManual(true)
+    // Every method copies the country and the valas — a country is legal on all four, and it is
+    // what puts the two fee methods in valas mode.
+    setCountryId(seed.countryId)
+    setValas(String(seed.valas ?? 0))
+
+    // A switch, not an if/else chain: this has to name every method, and a chain would let a
+    // fifth one fall through to whatever the last branch happened to be. The `never` makes that
+    // a compile error instead.
+    switch (seed.pricingMethod) {
+      case "overseas":
+        setProfitPct(String(seed.profitPct ?? 0))
+        setOpFee(String(seed.operationalFee ?? 5000))
+        setPackFee(String(seed.packingFee ?? 5000))
+        break
+      case "tier_kurs":
+        // The pack fee is part of this method's price — ceil(valas × rate + packFee) — so a
+        // duplicate that dropped it repriced itself against the Settings default.
+        //
+        // The RATE is deliberately not copied: the server re-resolves it from the duplicated
+        // valas, so a stale snapshot must not ride along.
+        setPackFee(String(seed.packingFee ?? 5000))
+        break
+      case "tier_fee":
+        // Rupiah mode is the no-country case, and only it has a typed base cost and a typed
+        // fee. In valas mode both are derived server-side, so copying them would imply this
+        // form had a say in them.
+        if (seed.countryId == null) {
+          setCost(String(seed.cost ?? 0))
+          setProfitFixed(String(seed.profitFixed ?? 0))
+          setProfitManual(true)
+        }
+        break
+      case "flat_fee":
+        // The percent flag comes along because it decides how the fee is expressed. The fee
+        // itself is one Settings figure the server re-reads, so it is never copied. Cost is
+        // re-derived from valas in valas mode, which makes copying it a rupiah-mode concern.
+        setFlatFeeMode(seed.flatFeeMode)
+        setCost(String(seed.cost ?? 0))
+        break
+      default: {
+        // Unreachable by construction; `void` rather than a return, because anything an effect
+        // returns is treated as its cleanup function.
+        const exhaustive: never = seed.pricingMethod
+        void exhaustive
+      }
     }
     setAddError(null)
     onConsumeSeed?.()

@@ -63,9 +63,31 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "tierKursRoundTo must be a whole number of at least 1" }, { status: 400 })
     }
 
-    await withActor(session.user.email, (tx) =>
-      updateProductDefaults({ profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo, flatFee, flatFeePct, flatFeeMin }, tx),
-    )
+    // null is a real choice ("start the form on IDR"), so only a present-but-unusable value is
+    // rejected. An id for a country that does not exist raises an FK violation, caught below.
+    let defaultCountryId: number | null = null
+    if (body.defaultCountryId != null) {
+      defaultCountryId = Number(body.defaultCountryId)
+      if (!Number.isInteger(defaultCountryId) || defaultCountryId < 1) {
+        return NextResponse.json({ error: "defaultCountryId must be a country id or null" }, { status: 400 })
+      }
+    }
+
+    try {
+      await withActor(session.user.email, (tx) =>
+        updateProductDefaults({
+          profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo, flatFee,
+          flatFeePct, flatFeeMin, defaultCountryId,
+        }, tx),
+      )
+    } catch (err) {
+      // 23503 = foreign_key_violation: the country was deleted between the form loading and
+      // this save. A 400 naming it beats the generic 500 below.
+      if (typeof err === "object" && err !== null && (err as { code?: string }).code === "23503") {
+        return NextResponse.json({ error: "Unknown country" }, { status: 400 })
+      }
+      throw err
+    }
     invalidate("product-defaults")
     return NextResponse.json({ ok: true })
   } catch (err) {

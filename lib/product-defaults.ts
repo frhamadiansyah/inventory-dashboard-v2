@@ -37,6 +37,17 @@ export interface ProductDefaults {
    * the owner's chosen fee with a different constant.
    */
   flatFeeMin: number
+  /**
+   * Which country the Add Product form's Country field starts on (migration 052).
+   *
+   * NULL is a real value, not "unset": the field offers "IDR (Rupiah)", so a null default starts
+   * the form in rupiah mode — which for the two fee methods decides whether the base cost is
+   * typed or derived.
+   *
+   * A pre-fill only. Nothing reads it at price-computation time, so changing it cannot move a
+   * stored price.
+   */
+  defaultCountryId: number | null
 }
 
 export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
@@ -53,4 +64,8 @@ export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
   flatFeePct: 0,
   // Inert until set: MAX(fee, 0) is fee.
   flatFeeMin: 0,
+  // No country, i.e. "IDR (Rupiah)". Only the fallback for a form whose settings have not
+  // loaded and the target of Settings' reset button — migration 052 seeds the real column with
+  // the country the form used to hardcode, so an existing install keeps its behaviour.
+  defaultCountryId: null,
 }
