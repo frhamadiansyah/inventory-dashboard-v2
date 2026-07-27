@@ -12,6 +12,7 @@ import {
 } from "@/lib/message-templates"
 import { DEFAULT_BUSINESS_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import { DEFAULT_PRODUCT_DEFAULTS, type ProductDefaults } from "@/lib/product-defaults"
+import type { CountryRow } from "@/lib/db"
 import KursTiersSection from "./KursTiersSection"
 import TierFeeBracketsSection from "./TierFeeBracketsSection"
 
@@ -312,10 +313,21 @@ function BusinessProfileSection() {
 
 function ProductDefaultsSection() {
   const [defaults, setDefaults] = useState<ProductDefaults | null>(null)
+  const [countries, setCountries] = useState<CountryRow[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+
+  // Only for the Default country select's options. A failure here is not surfaced: the rest of
+  // the card is still usable, and the select falls back to showing IDR plus whatever id is
+  // already saved. /api/sheets/countries returns { rows }, not { countries }.
+  useEffect(() => {
+    fetch("/api/sheets/countries", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: { rows?: CountryRow[] }) => setCountries(data.rows ?? []))
+      .catch(() => setCountries([]))
+  }, [])
 
   useEffect(() => {
     fetch("/api/sheets/product-defaults", { cache: "no-store" })
@@ -359,6 +371,12 @@ function ProductDefaultsSection() {
 
   function field(key: keyof ProductDefaults, value: string) {
     setDefaults((d) => (d ? { ...d, [key]: Number(value) || 0 } : d))
+  }
+
+  // Separate from field(): that one coerces with `Number(value) || 0`, which cannot express the
+  // null this column uses to mean "start the form on IDR".
+  function setDefaultCountry(value: string) {
+    setDefaults((d) => (d ? { ...d, defaultCountryId: value === "" ? null : Number(value) } : d))
   }
 
   return (
@@ -491,6 +509,26 @@ function ProductDefaultsSection() {
             <span className="text-[10px] text-gray-400">
               Floor under the percentage above, for when a small base would earn less than
               the work costs. 0 = no floor. Percent mode only.
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Default country</span>
+            <select
+              value={defaults.defaultCountryId != null ? String(defaults.defaultCountryId) : ""}
+              onChange={(e) => setDefaultCountry(e.target.value)}
+              className={fieldInputCls}
+            >
+              {/* Empty value = NULL = no country, which the Add Product form shows as
+                  "IDR (Rupiah)". A real option, not a placeholder. */}
+              <option value="">IDR (Rupiah)</option>
+              {countries.map((c) => (
+                <option key={c.id} value={c.id}>{c.name} ({c.currency})</option>
+              ))}
+            </select>
+            <span className="text-[10px] text-gray-400">
+              Which country the Add Product form starts on. For Markup and Flat Fee this also
+              decides whether that form opens with a typed base cost (IDR) or one derived from
+              valas.
             </span>
           </label>
         </div>
