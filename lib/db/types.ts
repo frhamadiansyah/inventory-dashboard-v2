@@ -1,6 +1,8 @@
 // Shared types for the db/* modules.
 
 import type { PaymentStatus } from "./finance"
+import type { FlatFeeMode, PricingMethod } from "@/lib/pricing"
+import type { TierFeeMode, TierFeeScope } from "@/lib/tier-fee"
 
 // ─── Types (same interfaces as the old sheets.ts) ───────────────────────────
 
@@ -387,6 +389,39 @@ export interface CountryRow {
   updatedAt: string
 }
 
+/**
+ * One Tier Kurs bracket: from `minValas` upward, charge `kurs` instead of the
+ * country's flat rate. `minValas` is INCLUSIVE and the highest matching minimum
+ * wins — the resolution itself lives in lib/kurs-tiers.ts.
+ */
+export interface KursTierRow {
+  id: number
+  countryId: number
+  minValas: number
+  kurs: number
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * One Tier Fee bracket: from `minBase` upward, charge this much
+ * fixed profit. `minBase` is INCLUSIVE and the highest matching minimum wins — the
+ * resolution lives in lib/tier-fee.ts.
+ *
+ * A SUGGESTION for the Add Product form, not a stored pricing rule: see
+ * migration 051.
+ */
+export interface TierFeeBracketRow {
+  id: number
+  /** Which set this bracket belongs to. Both are rupiah — see TierFeeScope. */
+  scope: TierFeeScope
+  minBase: number
+  feeMode: TierFeeMode
+  feeValue: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface ProductRow {
   id: number
   name: string
@@ -395,14 +430,28 @@ export interface ProductRow {
   gram: number
   countryId: number | null
   countryName: string
+  /** The country's currency code, for labelling amounts held in it — valas most
+   *  of all, which is meaningless without its unit. Empty string when there is no
+   *  country. */
+  countryCurrency: string
   valas: number
   kurs: number
+  /** The tiered rate this row was priced with, snapshotted at save time like
+   *  `kurs`. Null unless pricingMethod is "tier_kurs". See lib/kurs-tiers.ts. */
+  tieredKurs: number | null
   cargoPerKg: number
   profitPct: number
   operationalFee: number
   packingFee: number
   cost: number
   profitFixed: number
+  /** Whether this row's Flat Fee is a fixed amount or a share of base cost
+   *  (migration 054). Meaningless for the other three methods, which ignore it. */
+  flatFeeMode: FlatFeeMode
+  /** Which formula prices this row. Replaced `country_id IS NULL` as the
+   *  discriminator in migration 050 — a Tier Kurs product has a country but must
+   *  not use the overseas formula. */
+  pricingMethod: PricingMethod
   /** False when deactivated — hidden from the List Order item picker. */
   isActive: boolean
   createdAt: string
