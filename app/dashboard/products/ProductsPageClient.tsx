@@ -2209,6 +2209,19 @@ function EditProductModal({
       )
     : (row.tieredKurs ?? 0)
 
+  // A Tier Kurs row was costed at the markup rate that was live when it was added, and
+  // that figure lives in products.kurs. Keep it: rewriting it from countries.kurs on an
+  // unrelated edit would re-cost the row at a rate it was never priced with, and this
+  // modal has no live rate of its own to offer instead.
+  //
+  // The one exception is a country change, where the old snapshot is a rate for the wrong
+  // currency entirely; the new country's stored rate is then the best available.
+  //
+  // Declared above editCalc, which reads it during render: below it, the Tier Kurs branch
+  // hits the temporal dead zone and the modal throws on open.
+  const tierKursCostRate =
+    draft.countryId === row.countryId ? row.kurs : (draftCountry?.kurs ?? row.kurs)
+
   // Live price + per-unit COGS + profit. Profit (overseas) = price − COGS − fees,
   // matching the Add form's preview.
   const editCalc = useMemo<{ price: number; cogs: number | null; profit: number | null }>(() => {
@@ -2268,17 +2281,7 @@ function EditProductModal({
     }
     return { price: calcRupiahFeePrice(Number(draft.cost) || 0, Number(draft.profitFixed) || 0), cogs: null, profit: null }
   }, [draft, draftAbroad, draftTierKurs, draftFlatFee, draftFlatFeeValas, draftTierFeeValas, draftValasFee,
-      draftChargedKurs, draftCountry, row.kurs, row.cargoPerKg, productDefaults, flatFee])
-
-  // A Tier Kurs row was costed at the markup rate that was live when it was added, and
-  // that figure lives in products.kurs. Keep it: rewriting it from countries.kurs on an
-  // unrelated edit would re-cost the row at a rate it was never priced with, and this
-  // modal has no live rate of its own to offer instead.
-  //
-  // The one exception is a country change, where the old snapshot is a rate for the wrong
-  // currency entirely; the new country's stored rate is then the best available.
-  const tierKursCostRate =
-    draft.countryId === row.countryId ? row.kurs : (draftCountry?.kurs ?? row.kurs)
+      draftChargedKurs, draftCountry, row.kurs, row.cargoPerKg, productDefaults, flatFee, tierKursCostRate])
 
   async function handleSave() {
     setSaving(true)
