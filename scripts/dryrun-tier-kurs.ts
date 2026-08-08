@@ -19,7 +19,7 @@
 
 import postgres from "postgres"
 import { writeFileSync, mkdirSync } from "node:fs"
-import { calcTierKursPrice } from "../lib/pricing"
+import { calcKursPrice } from "../lib/pricing"
 import { resolveTieredKurs } from "../lib/kurs-tiers"
 
 if (!process.env.DATABASE_URL) {
@@ -135,7 +135,7 @@ async function main() {
     // gram and cargo_per_kg do not move the price — it is valas × the charged rate —
     // but they are part of cogs since freight is booked into cost, so pass the row's
     // own values rather than zeros.
-    const own = Math.round(calcTierKursPrice({ valas, tieredKurs: storedRate, kurs, roundTo, gram, cargoPerKg, packingFee }).price)
+    const own = Math.round(calcKursPrice({ valas, chargedKurs: storedRate, kurs, roundTo, gram, cargoPerKg, packingFee }).price)
     if (own !== (r.price ?? 0)) {
       priceMismatch++
       console.log(`  ❌ #${r.id} ${r.name.slice(0, 34)} stored ${rp(r.price)} but its own inputs give ${rp(own)}`)
@@ -147,7 +147,7 @@ async function main() {
       kurs,
     )
     if (Math.abs(live - storedRate) > EPSILON) {
-      const nowPrice = Math.round(calcTierKursPrice({ valas, tieredKurs: live, kurs, roundTo, gram, cargoPerKg, packingFee }).price)
+      const nowPrice = Math.round(calcKursPrice({ valas, chargedKurs: live, kurs, roundTo, gram, cargoPerKg, packingFee }).price)
       stale.push({ r, storedRate, liveRate: live, nowPrice })
     }
   }

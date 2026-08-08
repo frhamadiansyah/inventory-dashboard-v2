@@ -6,7 +6,7 @@
 // Deliberately NOT inside lib/pricing.ts: that module is pure arithmetic over
 // values it is handed, and it knows nothing about database rows. It could not do
 // this lookup anyway — having no imports means no database access — which is why
-// the resolved rate is passed IN to calcTierKursPrice() rather than looked up
+// the resolved rate is passed IN to calcKursPrice() rather than looked up
 // there.
 //
 // `minValas` is INCLUSIVE and the HIGHEST matching minimum wins, so row order is
@@ -82,4 +82,26 @@ export function tiersForCountry<T extends KursTierInput & { countryId: number }>
   return (tiers ?? [])
     .filter((t) => t.countryId === countryId)
     .sort((a, b) => Number(a.minValas) - Number(b.minValas))
+}
+
+/**
+ * The rate to charge a Flat Kurs product: the country's one configured rate, or the cost
+ * rate when it has none.
+ *
+ * Accepts a string because postgres-js returns NUMERIC that way, and rejects anything
+ * non-finite or non-positive with the same guard pickKursTier applies to a bracket — an
+ * unusable rate and an absent one mean the same thing here.
+ *
+ * `fallbackKurs` carries the SAME contract resolveTieredKurs documents above, and for the
+ * same reason: it must be the rate the row books as cost — the value being snapshotted onto
+ * the product — and NOT a fresh read of countries.kurs. Otherwise an unconfigured country
+ * charges a rate the cost was not booked at, producing a spread out of nothing instead of
+ * pricing the product at cost.
+ */
+export function resolveFlatKurs(
+  flatKurs: number | string | null | undefined,
+  fallbackKurs: number,
+): number {
+  const rate = Number(flatKurs)
+  return Number.isFinite(rate) && rate > 0 ? rate : fallbackKurs
 }

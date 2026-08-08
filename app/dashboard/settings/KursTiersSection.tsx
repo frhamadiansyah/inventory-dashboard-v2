@@ -17,7 +17,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useKursTiers } from "@/hooks/useKursTiers"
 import { resolveTieredKurs, tiersForCountry } from "@/lib/kurs-tiers"
-import { calcTierKursPrice, tierKursProfit } from "@/lib/pricing"
+import { calcKursPrice, kursProfit } from "@/lib/pricing"
 import { useProductDefaults } from "@/hooks/useProductDefaults"
 import type { CountryRow, KursTierRow } from "@/lib/db"
 
@@ -189,9 +189,9 @@ function CountryBrackets({
     previewValas,
     country.kurs,
   )
-  const preview = calcTierKursPrice({
+  const preview = calcKursPrice({
     valas: previewValas,
-    tieredKurs: charged,
+    chargedKurs: charged,
     kurs: country.kurs,
     // No product here, so no weight: this previews what the BRACKETS do to a valas
     // amount. A real product's cost also carries (gram / 1000) × the country's
@@ -368,7 +368,7 @@ function CountryBrackets({
             {" · cost Rp "}{fmt(Math.round(preview.cogs))}
             {" · profit "}
             <span className={preview.price - preview.cogs >= 0 ? "text-green-700" : "text-red-600"}>
-              Rp {fmt(tierKursProfit({ ...preview, packingFee: 0 }))}
+              Rp {fmt(kursProfit({ ...preview, packingFee: 0 }))}
             </span>
           </p>
           <p className="text-[10px] text-gray-400">

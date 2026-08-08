@@ -12,7 +12,7 @@
 
 import InfoPopover from "@/components/InfoPopover"
 import { pickKursTier, tiersForCountry } from "@/lib/kurs-tiers"
-import { calcTierKursPrice } from "@/lib/pricing"
+import { calcKursPrice } from "@/lib/pricing"
 import type { CountryRow, KursTierRow } from "@/lib/db"
 
 const fmt = (n: number) => n.toLocaleString("id-ID")
@@ -42,9 +42,9 @@ export default function KursTierPopover({
   // Same fallback rule as the form and the server: no bracket means the flat rate,
   // which prices the product at cost with a zero spread.
   const charged = active ? Number(active.kurs) : (country?.kurs ?? 0)
-  const { cogs, price } = calcTierKursPrice({
+  const { cogs, price } = calcKursPrice({
     valas,
-    tieredKurs: charged,
+    chargedKurs: charged,
     kurs: country?.kurs ?? 0,
     gram,
     cargoPerKg: country?.cargoPerKg ?? 0,

@@ -13,7 +13,7 @@ import ToggleSwitch from "@/components/ToggleSwitch"
 import SearchableSelect from "@/components/SearchableSelect"
 import SearchInput from "@/components/SearchInput"
 import {
-  calcAbroadPrice, calcRupiahFeePrice, abroadProfit, calcTierKursPrice, tierKursProfit,
+  calcAbroadPrice, calcRupiahFeePrice, abroadProfit, calcKursPrice, kursProfit,
   calcFlatFeeValasPrice, flatFeeAmount, flatFeeFloorApplies, landedCost, type FlatFeeMode,
   calcTierFeeValasPrice,
   PRICING_METHOD_LABEL, type PricingMethod,
@@ -1110,9 +1110,9 @@ function AddProductForm({
       return { cogs, price }
     }
     if (type === "tier_kurs") {
-      return calcTierKursPrice({
+      return calcKursPrice({
         valas: Number(valas) || 0,
-        tieredKurs: chargedKurs,
+        chargedKurs,
         // The markup rate, not the stored country rate — see costRate.
         kurs: costRate,
         gram: Number(gram) || 0,
@@ -1407,8 +1407,8 @@ function AddProductForm({
                 from profit below, as the overseas readout does with its two fees — the
                 charge is recovered through the price, not margin. One consequence worth
                 knowing: price − COST will exceed PROFIT by the pack fee. */}
-            <span className={profitTone(tierKursProfit({ ...pricePreview, packingFee: Number(packFee) || 0 }))}>
-              PROFIT: Rp {fmt(tierKursProfit({ ...pricePreview, packingFee: Number(packFee) || 0 }))}
+            <span className={profitTone(kursProfit({ ...pricePreview, packingFee: Number(packFee) || 0 }))}>
+              PROFIT: Rp {fmt(kursProfit({ ...pricePreview, packingFee: Number(packFee) || 0 }))}
             </span>
           </>,
         )
@@ -2239,11 +2239,11 @@ function EditProductModal({
       return { price, cogs: Math.round(cogs), profit }
     }
     if (draftTierKurs) {
-      const { cogs, price } = calcTierKursPrice({
+      const { cogs, price } = calcKursPrice({
         gram: Number(draft.gram) || 0,
         cargoPerKg: draftCountry?.cargoPerKg ?? row.cargoPerKg,
         valas: Number(draft.valas) || 0,
-        tieredKurs: draftChargedKurs,
+        chargedKurs: draftChargedKurs,
         kurs: tierKursCostRate,
         packingFee: Number(draft.packFee) || 0,
         roundTo: productDefaults?.tierKursRoundTo ?? DEFAULT_PRODUCT_DEFAULTS.tierKursRoundTo,
@@ -2251,7 +2251,7 @@ function EditProductModal({
       return {
         price,
         cogs: Math.round(cogs),
-        profit: tierKursProfit({ price, cogs, packingFee: Number(draft.packFee) || 0 }),
+        profit: kursProfit({ price, cogs, packingFee: Number(draft.packFee) || 0 }),
       }
     }
     if (draftTierFeeValas) {

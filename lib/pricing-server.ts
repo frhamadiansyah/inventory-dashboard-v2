@@ -31,7 +31,7 @@
 // in the browser for the form's live preview.
 
 import {
-  calcTierKursPrice, calcRupiahFeePrice, calcTierFeeValasPrice,
+  calcKursPrice, calcRupiahFeePrice, calcTierFeeValasPrice,
   flatFeeAmount, landedCost,
 } from "./pricing"
 import type { FlatFeeMode, PricingMethod } from "./pricing"
@@ -226,8 +226,8 @@ export async function computeProductPrice(opts: {
   // gram and cargoPerKg move only `cogs`, which nothing here stores. packingFee DOES move
   // the price, but it is a pass-through charge the user sets — like valas, not like the
   // tiered rate — so the body is its rightful source.
-  const computed = Math.round(calcTierKursPrice({
-    valas, tieredKurs, kurs, roundTo,
+  const computed = Math.round(calcKursPrice({
+    valas, chargedKurs: tieredKurs, kurs, roundTo,
     gram: Number(body.gram) || 0,
     cargoPerKg: Number(body.cargoPerKg) || 0,
     packingFee: Number(body.packingFee) || 0,
