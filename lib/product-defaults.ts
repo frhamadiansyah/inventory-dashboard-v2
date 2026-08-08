@@ -17,6 +17,18 @@ export interface ProductDefaults {
    */
   tierKursRoundTo: number
   /**
+   * Rounding step for the Profit Margin method (migration 054), replacing the hardcoded
+   * ceilTo1000() that method used to carry.
+   *
+   * Its own column rather than a share of tierKursRoundTo: the two are different numbers
+   * (1000 and 5000) and the owner set neither of them together.
+   *
+   * Unlike tierKursRoundTo this is applied CLIENT-side — an overseas price is computed by
+   * the form and stored as submitted (see lib/pricing-server.ts) — so it moves a product
+   * only when that product is next saved through the form.
+   */
+  profitMarginRoundTo: number
+  /**
    * The fee added to base cost by the Flat Fee method (migration 052).
    *
    * Also NOT a form pre-fill: it is resolved server-side at save time, which is the
@@ -57,6 +69,9 @@ export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
   markupPct: 5,
   // 5,000 matches how the catalogue is actually priced — see migration 050.
   tierKursRoundTo: 5000,
+  // 1,000 is exactly what ceilTo1000() did before migration 054, so an install that never
+  // touches this keeps the prices it always produced.
+  profitMarginRoundTo: 1000,
   // The owner's starting value, not a derived one. Editable in Settings.
   flatFee: 10_000,
   // 0 until the owner sets one: a percent-mode row then prices at cost, which is visible

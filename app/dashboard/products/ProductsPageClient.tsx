@@ -1130,6 +1130,7 @@ function AddProductForm({
         profitPct: Number(profitPct) || 0,
         operationalFee: Number(opFee) || 0,
         packingFee: Number(packFee) || 0,
+        roundTo: productDefaults?.profitMarginRoundTo ?? DEFAULT_PRODUCT_DEFAULTS.profitMarginRoundTo,
       })
       return { cogs, price }
     }
@@ -2330,6 +2331,7 @@ function EditProductModal({
         profitPct: Number(draft.profitPct) || 0,
         operationalFee: Number(draft.opFee) || 0,
         packingFee: Number(draft.packFee) || 0,
+        roundTo: productDefaults?.profitMarginRoundTo ?? DEFAULT_PRODUCT_DEFAULTS.profitMarginRoundTo,
       })
       const profit = abroadProfit({ price, cogs, operationalFee: Number(draft.opFee) || 0, packingFee: Number(draft.packFee) || 0 })
       return { price, cogs: Math.round(cogs), profit }

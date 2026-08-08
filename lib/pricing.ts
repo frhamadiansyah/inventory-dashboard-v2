@@ -42,13 +42,12 @@ export function toPricingMethod(v: unknown): PricingMethod {
   return PRICING_METHODS.includes(v as PricingMethod) ? (v as PricingMethod) : "overseas"
 }
 
-/** Round up to the nearest multiple of 1000. */
-export function ceilTo1000(n: number): number {
-  return Math.ceil(n / 1000) * 1000
-}
-
 /** Round up to the nearest multiple of `to`. Guards a zero/negative step, which
- *  would otherwise divide by zero. */
+ *  would otherwise divide by zero.
+ *
+ *  The only rounding helper: ceilTo1000() lived beside this until migration 054 made the
+ *  Profit Margin step configurable, and a second helper hardcoding one method's step is how
+ *  two rounding rules go unnoticed in one catalogue. */
 export function ceilTo(n: number, to: number): number {
   const step = to > 0 ? to : 1
   return Math.ceil(n / step) * step
@@ -80,19 +79,30 @@ export interface AbroadPriceInput {
   profitPct: number
   operationalFee: number
   packingFee: number
+  /** Rounding step, from product_defaults.profit_margin_round_to (default 1000, which is
+   *  what this method hardcoded before migration 054).
+   *
+   *  Deliberately NOT the same column the Rate methods read: the two steps are different
+   *  numbers, and sharing one would reprice this method's whole catalogue the first time
+   *  either was edited. */
+  roundTo: number
 }
 
 /**
  * Landed cost + selling price for an overseas product.
  *   COGS  = valas × kurs + (gram/1000) × cargoPerKg
- *   price = ceilTo1000( COGS × 100/(100−profit%) + opFee + packFee )
+ *   price = ceilTo( COGS × 100/(100−profit%) + opFee + packFee, roundTo )
  * profit% ≥ 100 is invalid (would divide by ≤0), so price falls back to 0.
+ *
+ * The fees go in BEFORE the ceiling, as they do in calcKursPrice: they are part of what the
+ * customer pays, so the rounding applies to the total rather than leaving a rounded price
+ * with an unrounded fee bolted on. The round-up therefore lands in profit, not cost.
  */
 export function calcAbroadPrice(p: AbroadPriceInput): { cogs: number; price: number } {
   const cogs = landedCost(p)
   if (p.profitPct >= 100) return { cogs, price: 0 }
   const raw = (cogs * 100) / (100 - p.profitPct) + p.operationalFee + p.packingFee
-  return { cogs, price: ceilTo1000(raw) }
+  return { cogs, price: ceilTo(raw, p.roundTo) }
 }
 
 /** Per-unit profit for an overseas product = price − COGS − fees. */

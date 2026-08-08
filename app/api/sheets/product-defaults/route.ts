@@ -33,6 +33,7 @@ export async function PATCH(req: NextRequest) {
     const packingFee = Number(body.packingFee)
     const markupPct = Number(body.markupPct)
     const tierKursRoundTo = Number(body.tierKursRoundTo)
+    const profitMarginRoundTo = Number(body.profitMarginRoundTo)
     const flatFee = Number(body.flatFee)
     const flatFeePct = Number(body.flatFeePct)
     const flatFeeMin = Number(body.flatFeeMin)
@@ -62,6 +63,10 @@ export async function PATCH(req: NextRequest) {
     if (!Number.isInteger(tierKursRoundTo) || tierKursRoundTo < 1) {
       return NextResponse.json({ error: "tierKursRoundTo must be a whole number of at least 1" }, { status: 400 })
     }
+    // Same hazard, same guard, separate column (migration 054): the Profit Margin step.
+    if (!Number.isInteger(profitMarginRoundTo) || profitMarginRoundTo < 1) {
+      return NextResponse.json({ error: "profitMarginRoundTo must be a whole number of at least 1" }, { status: 400 })
+    }
 
     // null is a real choice ("start the form on IDR"), so only a present-but-unusable value is
     // rejected. An id for a country that does not exist raises an FK violation, caught below.
@@ -76,8 +81,8 @@ export async function PATCH(req: NextRequest) {
     try {
       await withActor(session.user.email, (tx) =>
         updateProductDefaults({
-          profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo, flatFee,
-          flatFeePct, flatFeeMin, defaultCountryId,
+          profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo,
+          profitMarginRoundTo, flatFee, flatFeePct, flatFeeMin, defaultCountryId,
         }, tx),
       )
     } catch (err) {

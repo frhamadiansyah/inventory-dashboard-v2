@@ -497,9 +497,8 @@ function ProductDefaultsSection() {
       </div>
 
       <p className="text-[10px] text-gray-400">
-        The margin a Profit Margin product opens with. Price is cost ÷ (1 − this), plus the
-        operational and packing fees. Each product keeps its own copy, so editing this
-        changes nothing that already exists.
+        Price is cost ÷ (1 − Profit %), plus the operational and packing fees, rounded up to
+        the step below.
       </p>
 
       {defaults && (
@@ -513,7 +512,26 @@ function ProductDefaultsSection() {
               className={fieldInputCls}
             />
             <span className="text-[10px] text-gray-400">
-              100 or more leaves nothing to divide into, so the price computes as 0.
+              What the Add Product form starts on. Each product keeps its own copy, so
+              editing this changes nothing that already exists. 100 or more leaves nothing to
+              divide into, and the price computes as 0.
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Rounding</span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={defaults.profitMarginRoundTo}
+              onChange={(e) => field("profitMarginRoundTo", e.target.value)}
+              className={fieldInputCls}
+            />
+            {/* Unlike Profit % beside it, this is not a pre-fill — every Profit Margin
+                product is rounded by whatever this holds when it is saved. */}
+            <span className="text-[10px] text-gray-400">
+              Prices round UP to this step. Separate from the Rate card&apos;s step, and read
+              on a product&apos;s next save — so changing it reprices each one then, not now.
             </span>
           </label>
         </div>
