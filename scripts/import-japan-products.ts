@@ -228,6 +228,9 @@ async function main() {
     const { price: computedPrice } = calcAbroadPrice({
       valas, kurs: country.kurs, gram, cargoPerKg: country.cargo,
       profitPct, operationalFee: OP_FEE, packingFee: PACK_FEE,
+      // Migration 054 made this configurable; 1000 is what calcAbroadPrice hardcoded
+      // before it, so this script's output is unchanged.
+      roundTo: 1000,
     })
     const values: Values = {
       name, store,
