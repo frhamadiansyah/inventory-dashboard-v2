@@ -4,14 +4,18 @@
 /** The pricing methods. Stored on products.pricing_method (migration 050), which
  *  replaced `country_id IS NULL` as the formula discriminator — a Tier Kurs product
  *  has a country but must not use the overseas formula. `flat_fee` was added in
- *  migration 052. */
-export type PricingMethod = "overseas" | "tier_fee" | "tier_kurs" | "flat_fee"
+ *  migration 052, `flat_kurs` in 053. */
+export type PricingMethod = "overseas" | "tier_fee" | "tier_kurs" | "flat_fee" | "flat_kurs"
 
 export const PRICING_METHODS: readonly PricingMethod[] = [
-  "overseas", "tier_fee", "flat_fee", "tier_kurs",
+  "overseas", "tier_fee", "flat_fee", "tier_kurs", "flat_kurs",
 ]
 
-/** Labels used by the product form and the products table. */
+/** Labels used by the product form and the products table.
+ *
+ *  The two `_kurs` methods are a family, so the tab that reaches them is labelled for the
+ *  family — "Rate" — and the Tier/Flat toggle inside picks the member, exactly as "Markup"
+ *  and "Flat Fee" already read. */
 export const PRICING_METHOD_LABEL: Record<PricingMethod, string> = {
   overseas: "Profit Margin",
   // The stored value stays `tier_fee` — renaming a pricing_method means a migration and a
@@ -19,7 +23,18 @@ export const PRICING_METHOD_LABEL: Record<PricingMethod, string> = {
   // keyword list in getProductsPaginated's type filter in step with this.
   tier_fee: "Markup",
   flat_fee: "Flat Fee",
-  tier_kurs: "Tier Kurs",
+  tier_kurs: "Rate",
+  flat_kurs: "Flat Rate",
+}
+
+/** The two methods priced from a charged exchange rate, reached through the Rate tab's
+ *  Tier | Flat toggle exactly as the fee pair is reached through the Fee toggle.
+ *
+ *  Lives here, beside the union it narrows, because both the server pricing authority and
+ *  the product form ask the same question. Two copies of "which methods are Rate methods"
+ *  would drift the day a sixth method lands. */
+export function isKursMethod(m: PricingMethod): boolean {
+  return m === "tier_kurs" || m === "flat_kurs"
 }
 
 /** Narrow an arbitrary string (a DB value or request body field) to a method. */
@@ -27,13 +42,12 @@ export function toPricingMethod(v: unknown): PricingMethod {
   return PRICING_METHODS.includes(v as PricingMethod) ? (v as PricingMethod) : "overseas"
 }
 
-/** Round up to the nearest multiple of 1000. */
-export function ceilTo1000(n: number): number {
-  return Math.ceil(n / 1000) * 1000
-}
-
 /** Round up to the nearest multiple of `to`. Guards a zero/negative step, which
- *  would otherwise divide by zero. */
+ *  would otherwise divide by zero.
+ *
+ *  The only rounding helper: ceilTo1000() lived beside this until migration 054 made the
+ *  Profit Margin step configurable, and a second helper hardcoding one method's step is how
+ *  two rounding rules go unnoticed in one catalogue. */
 export function ceilTo(n: number, to: number): number {
   const step = to > 0 ? to : 1
   return Math.ceil(n / step) * step
@@ -65,19 +79,30 @@ export interface AbroadPriceInput {
   profitPct: number
   operationalFee: number
   packingFee: number
+  /** Rounding step, from product_defaults.profit_margin_round_to (default 1000, which is
+   *  what this method hardcoded before migration 054).
+   *
+   *  Deliberately NOT the same column the Rate methods read: the two steps are different
+   *  numbers, and sharing one would reprice this method's whole catalogue the first time
+   *  either was edited. */
+  roundTo: number
 }
 
 /**
  * Landed cost + selling price for an overseas product.
  *   COGS  = valas × kurs + (gram/1000) × cargoPerKg
- *   price = ceilTo1000( COGS × 100/(100−profit%) + opFee + packFee )
+ *   price = ceilTo( COGS × 100/(100−profit%) + opFee + packFee, roundTo )
  * profit% ≥ 100 is invalid (would divide by ≤0), so price falls back to 0.
+ *
+ * The fees go in BEFORE the ceiling, as they do in calcKursPrice: they are part of what the
+ * customer pays, so the rounding applies to the total rather than leaving a rounded price
+ * with an unrounded fee bolted on. The round-up therefore lands in profit, not cost.
  */
 export function calcAbroadPrice(p: AbroadPriceInput): { cogs: number; price: number } {
   const cogs = landedCost(p)
   if (p.profitPct >= 100) return { cogs, price: 0 }
   const raw = (cogs * 100) / (100 - p.profitPct) + p.operationalFee + p.packingFee
-  return { cogs, price: ceilTo1000(raw) }
+  return { cogs, price: ceilTo(raw, p.roundTo) }
 }
 
 /** Per-unit profit for an overseas product = price − COGS − fees. */
@@ -223,11 +248,13 @@ export function calcTierFeeValasPrice(p: TierFeeValasPriceInput): { cogs: number
   return { cogs, price: ceilTo(cogs + p.fee, p.roundTo) }
 }
 
-export interface TierKursPriceInput {
+export interface KursPriceInput {
   valas: number
-  /** The rate CHARGED, resolved from the country's brackets — see
-   *  resolveTieredKurs() in lib/kurs-tiers.ts. */
-  tieredKurs: number
+  /** The rate CHARGED. For tier_kurs that is resolved from the country's brackets by
+   *  resolveTieredKurs(); for flat_kurs it is countries.flat_kurs via resolveFlatKurs().
+   *  Both live in lib/kurs-tiers.ts, and both fall back to the cost rate when unconfigured,
+   *  which is what makes an unconfigured country price at cost rather than at nothing. */
+  chargedKurs: number
   /** The country's ACTUAL rate, which is what cost is booked at. */
   kurs: number
   /** Shipping weight. Costs money to land, so it belongs in cogs. */
@@ -261,13 +288,13 @@ export interface TierKursPriceInput {
  * 0 and the product is priced at bare goods cost — visible, and self-correcting once
  * brackets exist.
  */
-export function calcTierKursPrice(p: TierKursPriceInput): { cogs: number; price: number } {
+export function calcKursPrice(p: KursPriceInput): { cogs: number; price: number } {
   return {
     cogs: landedCost(p),
     // The packing charge goes in BEFORE the ceiling, as it does in calcAbroadPrice: it is
     // part of what the customer pays, so rounding applies to the total rather than
     // leaving a rounded price with an unrounded fee bolted on.
-    price: ceilTo(p.valas * p.tieredKurs + p.packingFee, p.roundTo),
+    price: ceilTo(p.valas * p.chargedKurs + p.packingFee, p.roundTo),
   }
 }
 
@@ -276,6 +303,6 @@ export function calcTierKursPrice(p: TierKursPriceInput): { cogs: number; price:
  *  packingFee is subtracted for the same reason abroadProfit subtracts it: the fee is a
  *  cost recovered through the price, not margin. Leaving it in would report the packing
  *  charge as profit. */
-export function tierKursProfit(p: { price: number; cogs: number; packingFee: number }): number {
+export function kursProfit(p: { price: number; cogs: number; packingFee: number }): number {
   return Math.round(p.price - p.cogs - p.packingFee)
 }

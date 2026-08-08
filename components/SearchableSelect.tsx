@@ -52,6 +52,21 @@ export default function SearchableSelect({
   const [highlightIdx, setHighlightIdx] = useState(-1)
   const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({})
 
+  // Phone-sized viewports get a different control entirely — see the render below. Tracked in
+  // state rather than with a CSS class because the two shapes are structurally different, not
+  // one layout at two widths, and rendering both would put every option in the DOM twice.
+  //
+  // 767px is Tailwind's `md` breakpoint minus one, so this flips exactly where every `md:`
+  // class in the app flips.
+  const [isMobile, setIsMobile] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)")
+    const apply = () => setIsMobile(mq.matches)
+    apply()
+    mq.addEventListener("change", apply)
+    return () => mq.removeEventListener("change", apply)
+  }, [])
+
   const inputRef = useRef<HTMLInputElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
@@ -103,6 +118,23 @@ export default function SearchableSelect({
   function positionPopup() {
     const rect = inputRef.current?.getBoundingClientRect()
     if (!rect) return
+
+    // Mobile: one full-width strip pinned to the bottom of the VISUAL viewport, which is the
+    // top of the keyboard. Not anchored to the input at all, deliberately — anchoring is what
+    // made the old panel chase the field around as the keyboard opened and the page panned,
+    // and a 260px panel below a field near the bottom of the screen had nowhere to go but
+    // over the field itself.
+    //
+    // `bottom` is measured in the LAYOUT viewport, because that is what position:fixed uses.
+    // window.innerHeight − (offsetTop + height) is the space the keyboard is occupying, so
+    // the strip lands exactly on top of it, and on 0 when the keyboard is closed.
+    if (isMobile) {
+      const vv = window.visualViewport
+      const keyboard = vv ? Math.max(0, window.innerHeight - (vv.offsetTop + vv.height)) : 0
+      setPopupStyle({ position: "fixed", bottom: keyboard, left: 0, right: 0 })
+      return
+    }
+
     const POPUP_HEIGHT = 260
     // Decide above/below using the *visible* height (visualViewport shrinks when
     // the mobile keyboard is open; window.innerHeight does not) so the list never
@@ -209,8 +241,25 @@ export default function SearchableSelect({
       vv?.removeEventListener("resize", reposition)
       vv?.removeEventListener("scroll", reposition)
     }
+    // isMobile is listed because positionPopup branches on it: a rotation that crosses the
+    // breakpoint while the list is open must re-run with the other shape's geometry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+  }, [open, isMobile])
+
+  // The strip covers the bottom of the screen, and the browser only guarantees to scroll a
+  // focused field clear of the KEYBOARD — not clear of whatever sits above it. Without this,
+  // a field near the bottom of a sheet ends up behind the strip and you cannot read what you
+  // typed, which is the whole complaint the strip exists to fix.
+  //
+  // Deferred a frame so it runs after the strip has laid out, and `center` rather than
+  // `nearest` so there is room for the strip below the field whichever way the page scrolls.
+  useEffect(() => {
+    if (!open || !isMobile) return
+    const id = requestAnimationFrame(() => {
+      inputRef.current?.scrollIntoView({ block: "center", behavior: "smooth" })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [open, isMobile])
 
   // ---------- Input handlers ----------
 
@@ -321,7 +370,67 @@ export default function SearchableSelect({
         />
       </svg>
 
-      {open && (
+      {/* Mobile: one horizontal strip of suggestions above the keyboard, the shape the phone
+          keyboard's own autocomplete uses. A vertical panel cannot work here — it either
+          covers the field being typed into or hides behind the keyboard, and it moves
+          whenever the keyboard does.
+
+          Horizontal scrolling is the trade: only a few options are visible at once, and
+          narrowing is done by typing rather than by scrolling a long list. That is the same
+          bargain the keyboard's own suggestion bar makes, and it is why the strip does not
+          try to show `meta` — a label plus a price per chip would fit two chips on screen. */}
+      {open && isMobile && (
+        <div
+          ref={popupRef}
+          style={popupStyle}
+          className="z-50 bg-white border-t border-cream-border shadow-[0_-2px_8px_rgba(0,0,0,0.08)]"
+        >
+          <ul
+            className="flex items-stretch gap-1 overflow-x-auto px-2 py-1.5"
+            // Momentum scrolling, and no vertical rubber-banding to fight the page underneath.
+            style={{ WebkitOverflowScrolling: "touch", overscrollBehaviorX: "contain" }}
+          >
+            {showClearRow && (
+              <ChipItem
+                label={placeholder}
+                highlighted={highlightIdx === 0}
+                selected={false}
+                onSelect={() => selectOption("")}
+                className="text-gray-400"
+              />
+            )}
+            {LARGE_LIST && !alwaysShowAll && !debouncedQuery ? (
+              <li className="px-3 py-2 text-sm text-gray-400 whitespace-nowrap">
+                {hasQuery ? "Searching…" : "Type to search…"}
+              </li>
+            ) : showAddRow ? (
+              <ChipItem
+                label={`Add “${inputValue.trim()}”`}
+                highlighted={highlightIdx === 0}
+                selected={false}
+                onSelect={() => selectOption(inputValue.trim())}
+              />
+            ) : filtered.length === 0 ? (
+              <li className="px-3 py-2 text-sm text-gray-400 whitespace-nowrap">No results</li>
+            ) : (
+              filtered.map((opt, i) => {
+                const idx = i + (showClearRow ? 1 : 0)
+                return (
+                  <ChipItem
+                    key={`${opt.value}-${i}`}
+                    label={opt.label}
+                    highlighted={highlightIdx === idx}
+                    selected={value === opt.value}
+                    onSelect={() => selectOption(opt.value)}
+                  />
+                )
+              })
+            )}
+          </ul>
+        </div>
+      )}
+
+      {open && !isMobile && (
         <div
           ref={popupRef}
           style={popupStyle}
@@ -378,6 +487,53 @@ export default function SearchableSelect({
     </div>
   )
 }
+
+// ---------- ChipItem ----------
+//
+// One suggestion in the mobile strip. Same mousedown-with-preventDefault contract OptionItem
+// uses, so picking never blurs the input and never closes the keyboard mid-flow.
+
+const ChipItem = memo(function ChipItem({
+  label,
+  highlighted,
+  selected,
+  onSelect,
+  className,
+}: {
+  label: string
+  highlighted: boolean
+  selected: boolean
+  onSelect: () => void
+  className?: string
+}) {
+  const ref = useRef<HTMLLIElement>(null)
+
+  // `inline` rather than `nearest`: this axis is horizontal, and `nearest` would scroll the
+  // page vertically to reach a chip that is already on screen.
+  useEffect(() => {
+    if (highlighted) ref.current?.scrollIntoView({ inline: "nearest", block: "nearest" })
+  }, [highlighted])
+
+  return (
+    <li
+      ref={ref}
+      onMouseDown={(e) => {
+        e.preventDefault()
+        onSelect()
+      }}
+      // max-w keeps one long product name from filling the strip and hiding that there are
+      // others behind it; the label truncates rather than wrapping, so every chip is one row
+      // high and the strip's height never jumps as the query changes.
+      className={`shrink-0 max-w-[60vw] truncate rounded-full border px-3 py-2 text-sm cursor-pointer transition-colors ${
+        highlighted || selected
+          ? "bg-brand-light border-brand/30 text-brand font-medium"
+          : "bg-white border-cream-border text-foreground"
+      } ${className ?? ""}`}
+    >
+      {label}
+    </li>
+  )
+})
 
 // ---------- OptionItem ----------
 

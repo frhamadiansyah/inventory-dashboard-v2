@@ -12,6 +12,7 @@ import {
 } from "@/lib/message-templates"
 import { DEFAULT_BUSINESS_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import { DEFAULT_PRODUCT_DEFAULTS, type ProductDefaults } from "@/lib/product-defaults"
+import { PRICING_METHODS, PRICING_METHOD_LABEL, toPricingMethod } from "@/lib/pricing"
 import type { CountryRow } from "@/lib/db"
 import KursTiersSection from "./KursTiersSection"
 import TierFeeBracketsSection from "./TierFeeBracketsSection"
@@ -128,9 +129,14 @@ export default function SettingsClient() {
       <div className={tab === "business" ? "" : "hidden"}>
         <BusinessProfileSection />
       </div>
-      {/* All three cards are pricing config, so they share one tab. Product
-          defaults first — it owns the rounding step the Tier Kurs readout reports —
-          then one card per bracketed method, in PRICING_METHODS order. */}
+      {/* Every card here is pricing config, so they share one tab. Product defaults holds
+          what is common to more than one method; the rest are per method, in
+          PRICING_METHODS order.
+
+          ProductDefaultsSection renders THREE of them — Product defaults, Profit Margin and
+          Markup Flat — because all of those fields live in one product_defaults row behind
+          one Save. Splitting the component would mean three components racing to write the
+          same record. */}
       <div className={`flex flex-col gap-6 ${tab === "product-defaults" ? "" : "hidden"}`}>
         <ProductDefaultsSection />
         <TierFeeBracketsSection />
@@ -379,12 +385,33 @@ function ProductDefaultsSection() {
     setDefaults((d) => (d ? { ...d, defaultCountryId: value === "" ? null : Number(value) } : d))
   }
 
+  // Also separate from field(): this one is a string union, not a number.
+  function setDefaultPricingMethod(value: string) {
+    setDefaults((d) => (d ? { ...d, defaultPricingMethod: toPricingMethod(value) } : d))
+  }
+
+  const saveButton = (
+    <button
+      type="button"
+      onClick={handleSave}
+      disabled={saving || !defaults}
+      className="text-xs font-medium px-3 py-1.5 rounded-lg bg-brand text-white hover:bg-brand-light transition-colors disabled:opacity-50"
+    >
+      {saving ? "Saving…" : "Save"}
+    </button>
+  )
+
   return (
+    <>
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h2 className="text-sm font-semibold text-foreground">Product defaults</h2>
         <div className="flex items-center gap-3">
           {saved && <span className="text-xs text-green-600">Saved</span>}
+          {/* Reset lives on this card only: it restores DEFAULT_PRODUCT_DEFAULTS, which is
+              the whole record — including the three fields shown in the Markup Flat card
+              below. A second copy there would read as "reset the flat fee settings" and
+              quietly clear the rest. */}
           <button
             type="button"
             onClick={handleReset}
@@ -397,14 +424,7 @@ function ProductDefaultsSection() {
               <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
             </svg>
           </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving || !defaults}
-            className="text-xs font-medium px-3 py-1.5 rounded-lg bg-brand text-white hover:bg-brand-light transition-colors disabled:opacity-50"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
+          {saveButton}
         </div>
       </div>
 
@@ -416,15 +436,6 @@ function ProductDefaultsSection() {
 
       {defaults && (
         <div className="grid md:grid-cols-3 gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Profit %</span>
-            <input
-              type="number"
-              value={defaults.profitPct}
-              onChange={(e) => field("profitPct", e.target.value)}
-              className={fieldInputCls}
-            />
-          </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs text-gray-500">Operational fee</span>
             <input
@@ -453,20 +464,126 @@ function ProductDefaultsSection() {
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Tier Kurs rounding</span>
+            <span className="text-xs text-gray-500">Default pricing</span>
+            <select
+              value={defaults.defaultPricingMethod}
+              onChange={(e) => setDefaultPricingMethod(e.target.value)}
+              className={fieldInputCls}
+            >
+              {PRICING_METHODS.map((m) => (
+                <option key={m} value={m}>{PRICING_METHOD_LABEL[m]}</option>
+              ))}
+            </select>
+            <span className="text-[10px] text-gray-400">
+              Which tab the Add Product form opens on. Profit Margin and both Rate methods
+              need a country, so pair one of those with a Default country below or the form
+              opens with that field empty.
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Default country</span>
+            <select
+              value={defaults.defaultCountryId != null ? String(defaults.defaultCountryId) : ""}
+              onChange={(e) => setDefaultCountry(e.target.value)}
+              className={fieldInputCls}
+            >
+              {/* Empty value = NULL = no country, which the Add Product form shows as
+                  "IDR (Rupiah)". A real option, not a placeholder. */}
+              <option value="">IDR (Rupiah)</option>
+              {countries.map((c) => (
+                <option key={c.id} value={c.id}>{c.name} ({c.currency})</option>
+              ))}
+            </select>
+            <span className="text-[10px] text-gray-400">
+              Which country the Add Product form starts on. For Markup and Flat Fee this also
+              decides whether that form opens with a typed base cost (IDR) or one derived from
+              valas.
+            </span>
+          </label>
+        </div>
+      )}
+    </div>
+
+    {/* Profit Margin's one setting. Ahead of Markup Flat because the per-method cards run in
+        PRICING_METHODS order, and `overseas` is first.
+
+        Unlike the Markup Flat figures below, this one IS a pre-fill: every Profit Margin
+        product stores its own profit_pct, and the server prices from the row's copy, so
+        changing this moves nothing that already exists. */}
+    <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h2 className="text-sm font-semibold text-foreground">Profit Margin</h2>
+        <div className="flex items-center gap-3">
+          {saved && <span className="text-xs text-green-600">Saved</span>}
+          {saveButton}
+        </div>
+      </div>
+
+      <p className="text-[10px] text-gray-400">
+        Price is cost ÷ (1 − Profit %), plus the operational and packing fees, rounded up to
+        the step below.
+      </p>
+
+      {defaults && (
+        <div className="grid md:grid-cols-3 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Profit %</span>
+            <input
+              type="number"
+              value={defaults.profitPct}
+              onChange={(e) => field("profitPct", e.target.value)}
+              className={fieldInputCls}
+            />
+            <span className="text-[10px] text-gray-400">
+              What the Add Product form starts on. Each product keeps its own copy, so
+              editing this changes nothing that already exists. 100 or more leaves nothing to
+              divide into, and the price computes as 0.
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Rounding</span>
             <input
               type="number"
               min="1"
-              value={defaults.tierKursRoundTo}
-              onChange={(e) => field("tierKursRoundTo", e.target.value)}
+              step="1"
+              value={defaults.profitMarginRoundTo}
+              onChange={(e) => field("profitMarginRoundTo", e.target.value)}
               className={fieldInputCls}
             />
-            {/* One of two fields in this card that are not merely form pre-fills —
-                both are read when a price is computed. */}
+            {/* Unlike Profit % beside it, this is not a pre-fill — every Profit Margin
+                product is rounded by whatever this holds when it is saved. */}
             <span className="text-[10px] text-gray-400">
-              Prices round UP to this step. Applies on a product&apos;s next save.
+              Prices round UP to this step. Separate from the Rate card&apos;s step, and read
+              on a product&apos;s next save — so changing it reprices each one then, not now.
             </span>
           </label>
+        </div>
+      )}
+    </div>
+
+    {/* The three figures behind Markup's Flat toggle. Their own card because they are not
+        form pre-fills like the rest of Product defaults: the SERVER re-reads all three
+        inside the write transaction, so they are the authority over what a Flat Fee product
+        is priced at — the same distinction Tier Kurs rounding carries, one card up.
+
+        Same `defaults` state and the same PATCH, so this Save writes the whole record and
+        the two cards can never disagree. No reset here — see the comment on the one above. */}
+    <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h2 className="text-sm font-semibold text-foreground">Markup Flat</h2>
+        <div className="flex items-center gap-3">
+          {saved && <span className="text-xs text-green-600">Saved</span>}
+          {saveButton}
+        </div>
+      </div>
+
+      <p className="text-[10px] text-gray-400">
+        What a Flat Fee product earns — the Flat side of Markup&apos;s Tier | Flat toggle.
+        Read when a product is saved, so every Flat Fee product uses the same figures.
+      </p>
+
+      {defaults && (
+        <div className="grid md:grid-cols-3 gap-3">
           <label className="flex flex-col gap-1">
             <span className="text-xs text-gray-500">Flat Fee</span>
             <input
@@ -511,29 +628,10 @@ function ProductDefaultsSection() {
               the work costs. 0 = no floor. Percent mode only.
             </span>
           </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Default country</span>
-            <select
-              value={defaults.defaultCountryId != null ? String(defaults.defaultCountryId) : ""}
-              onChange={(e) => setDefaultCountry(e.target.value)}
-              className={fieldInputCls}
-            >
-              {/* Empty value = NULL = no country, which the Add Product form shows as
-                  "IDR (Rupiah)". A real option, not a placeholder. */}
-              <option value="">IDR (Rupiah)</option>
-              {countries.map((c) => (
-                <option key={c.id} value={c.id}>{c.name} ({c.currency})</option>
-              ))}
-            </select>
-            <span className="text-[10px] text-gray-400">
-              Which country the Add Product form starts on. For Markup and Flat Fee this also
-              decides whether that form opens with a typed base cost (IDR) or one derived from
-              valas.
-            </span>
-          </label>
         </div>
       )}
     </div>
+    </>
   )
 }
 

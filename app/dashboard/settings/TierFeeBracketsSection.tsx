@@ -64,7 +64,7 @@ export default function TierFeeBracketsSection() {
 
   return (
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
-      <h2 className="text-sm font-semibold text-foreground">Markup Tier brackets</h2>
+      <h2 className="text-sm font-semibold text-foreground">Markup Tier</h2>
 
       <p className="text-xs text-gray-500">
         A <span className="font-medium">Markup Tier</span> product is priced base cost + fee,

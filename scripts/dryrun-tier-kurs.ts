@@ -1,4 +1,8 @@
-// Read-only integrity check for the Tier Kurs pricing method. Changes nothing.
+// Read-only integrity check for BOTH Rate pricing methods — tier_kurs and flat_kurs.
+// Changes nothing.
+//
+// The two ask the same two questions and share the same arithmetic; only where the charged
+// rate came from differs, so only the expected-rate line below branches.
 //
 // Two things can go wrong that no other check would catch:
 //
@@ -19,8 +23,8 @@
 
 import postgres from "postgres"
 import { writeFileSync, mkdirSync } from "node:fs"
-import { calcTierKursPrice } from "../lib/pricing"
-import { resolveTieredKurs } from "../lib/kurs-tiers"
+import { calcKursPrice } from "../lib/pricing"
+import { resolveTieredKurs, resolveFlatKurs } from "../lib/kurs-tiers"
 
 if (!process.env.DATABASE_URL) {
   console.error("❌ DATABASE_URL is not set")
@@ -50,6 +54,9 @@ interface Row {
   gram: number
   cargo_per_kg: string | number
   packing_fee: number
+  /** The row's country's flat rate, joined in. Null when the row has no country; 0 when the
+   *  country has no flat rate set. Only flat_kurs rows read it. */
+  flat_kurs: string | number | null
 }
 
 async function main() {
@@ -74,26 +81,27 @@ async function main() {
   // both states are legal, so neither is evidence of anything.
   const [{ n: overseasNoCountry }] = (await sql`
     SELECT COUNT(*)::int AS n FROM products
-     WHERE pricing_method IN ('overseas', 'tier_kurs') AND country_id IS NULL
+     WHERE pricing_method IN ('overseas', 'tier_kurs', 'flat_kurs') AND country_id IS NULL
   `) as unknown as { n: number }[]
   const structural = 0
   if (overseasNoCountry > 0) {
-    console.log(`  ⚠️  ${overseasNoCountry} overseas/tier_kurs row(s) have NO country, so they price at 0 inputs`)
+    console.log(`  ⚠️  ${overseasNoCountry} overseas/Rate row(s) have NO country, so they price at 0 inputs`)
   }
   console.log("  ✅ method assignment is consistent (a country is legal on any method now)")
 
   // ── Tier Kurs rows ───────────────────────────────────────────────────────
   const rows = (await sql`
-    SELECT id, name, store, price, country_id, pricing_method, valas, kurs, tiered_kurs,
-           gram, cargo_per_kg, packing_fee
-      FROM products
-     WHERE pricing_method = 'tier_kurs' AND name != ''
-     ORDER BY id
+    SELECT p.id, p.name, p.store, p.price, p.country_id, p.pricing_method, p.valas, p.kurs,
+           p.tiered_kurs, p.gram, p.cargo_per_kg, p.packing_fee, c.flat_kurs
+      FROM products p
+      LEFT JOIN countries c ON c.id = p.country_id
+     WHERE p.pricing_method IN ('tier_kurs', 'flat_kurs') AND p.name != ''
+     ORDER BY p.id
   `) as unknown as Row[]
 
-  console.log(`\n── 1. Tier Kurs snapshot integrity (${rows.length} row(s)) ──`)
+  console.log(`\n── 1. Rate snapshot integrity (${rows.length} row(s)) ──`)
   if (rows.length === 0) {
-    console.log("  ℹ️  no products use Tier Kurs yet")
+    console.log("  ℹ️  no products use either Rate method yet")
     await sql.end()
     console.log(structural === 0 ? "\n✅ PASSED\n" : "\n❌ FAILED\n")
     process.exit(structural === 0 ? 0 : 1)
@@ -135,33 +143,38 @@ async function main() {
     // gram and cargo_per_kg do not move the price — it is valas × the charged rate —
     // but they are part of cogs since freight is booked into cost, so pass the row's
     // own values rather than zeros.
-    const own = Math.round(calcTierKursPrice({ valas, tieredKurs: storedRate, kurs, roundTo, gram, cargoPerKg, packingFee }).price)
+    const own = Math.round(calcKursPrice({ valas, chargedKurs: storedRate, kurs, roundTo, gram, cargoPerKg, packingFee }).price)
     if (own !== (r.price ?? 0)) {
       priceMismatch++
       console.log(`  ❌ #${r.id} ${r.name.slice(0, 34)} stored ${rp(r.price)} but its own inputs give ${rp(own)}`)
     }
 
-    const live = resolveTieredKurs(
-      r.country_id != null ? (bandsBy.get(r.country_id) ?? []) : [],
-      valas,
-      kurs,
-    )
+    // What the row WOULD be charged today. Both methods fall back to `kurs`, the rate the
+    // row books as cost, so an unconfigured country reads as a zero spread rather than as a
+    // stale snapshot.
+    const live = r.pricing_method === "flat_kurs"
+      ? resolveFlatKurs(r.flat_kurs, kurs)
+      : resolveTieredKurs(
+          r.country_id != null ? (bandsBy.get(r.country_id) ?? []) : [],
+          valas,
+          kurs,
+        )
     if (Math.abs(live - storedRate) > EPSILON) {
-      const nowPrice = Math.round(calcTierKursPrice({ valas, tieredKurs: live, kurs, roundTo, gram, cargoPerKg, packingFee }).price)
+      const nowPrice = Math.round(calcKursPrice({ valas, chargedKurs: live, kurs, roundTo, gram, cargoPerKg, packingFee }).price)
       stale.push({ r, storedRate, liveRate: live, nowPrice })
     }
   }
 
   if (noRate > 0) {
-    console.log(`  ❌ ${noRate} row(s) are Tier Kurs but have NULL tiered_kurs — they were never priced`)
+    console.log(`  ❌ ${noRate} Rate row(s) have NULL tiered_kurs — they were never priced`)
   }
   if (priceMismatch === 0 && noRate === 0) {
     console.log(`  ✅ price: all ${rows.length} rows agree with their own snapshot`)
   }
 
-  console.log("\n── 2. Snapshots vs the live brackets ──")
+  console.log("\n── 2. Snapshots vs the live rates ──")
   if (stale.length === 0) {
-    console.log("  ✅ every tiered rate still matches the live brackets")
+    console.log("  ✅ every charged rate still matches its live source")
   } else {
     console.log(
       `  ⚠️  ${stale.length} of ${rows.length} row(s) would reprice on next save` +
