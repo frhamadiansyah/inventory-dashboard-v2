@@ -464,21 +464,6 @@ function ProductDefaultsSection() {
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Tier Kurs rounding</span>
-            <input
-              type="number"
-              min="1"
-              value={defaults.tierKursRoundTo}
-              onChange={(e) => field("tierKursRoundTo", e.target.value)}
-              className={fieldInputCls}
-            />
-            {/* One of two fields in this card that are not merely form pre-fills —
-                both are read when a price is computed. */}
-            <span className="text-[10px] text-gray-400">
-              Prices round UP to this step. Applies on a product&apos;s next save.
-            </span>
-          </label>
-          <label className="flex flex-col gap-1">
             <span className="text-xs text-gray-500">Default country</span>
             <select
               value={defaults.defaultCountryId != null ? String(defaults.defaultCountryId) : ""}

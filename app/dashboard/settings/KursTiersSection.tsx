@@ -1,18 +1,20 @@
 "use client"
 
-// Editor for the Tier Kurs brackets: per country, from which valas upward to
-// charge which exchange rate.
+// Everything that decides what a Rate product is charged: the rounding step both methods
+// round up to, then per country its flat rate and its brackets.
 //
-// Its own card under Settings → Pricing, below Product defaults: a bracket set is
-// per-COUNTRY data with a cross-row invariant and its own Save, so it can't fold
-// into that card's flat field grid — but it belongs in the same tab, and it reads
-// the rounding step configured there.
+// Its own card under Settings → Pricing, below Product defaults, because none of this is a
+// form pre-fill — the server reads all of it inside the write transaction, so it sets what a
+// product's price IS rather than what its form opens with. The bracket sets also carry a
+// cross-row invariant and save a whole country at a time, which no flat field grid can hold.
 //
-// Every country is listed as an expandable row rather than reached through a
-// picker: there are only a handful, and the collapsed header answers "which
-// countries have tiered pricing at all, and how wide is the spread" without any
-// clicking. Each row keeps its own draft and its own Save, because the API writes
-// one country's whole set at a time.
+// THREE separate Saves in one card, which is unusual enough to say why: the rounding step is
+// a product_defaults column, and each country's rate configuration is its own atomic write.
+// Different records, so one button could not honestly report what it had saved.
+//
+// Every country is listed as an expandable row rather than reached through a picker: there
+// are only a handful, and the collapsed header answers "which countries are configured, and
+// how" without any clicking.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useKursTiers } from "@/hooks/useKursTiers"
@@ -79,7 +81,59 @@ export default function KursTiersSection() {
       return next
     })
 
-  const roundTo = productDefaults?.tierKursRoundTo ?? 5000
+  // The rounding step lives in product_defaults, not in the bracket tables — it is one
+  // number shared by both Rate methods, so it belongs to neither country and to neither
+  // member. It is edited HERE rather than among the Add Product pre-fills because it is not
+  // a pre-fill: the server reads it inside the write transaction, so it decides what a
+  // product's price actually is.
+  //
+  // Its own draft and its own Save, because it is a different RECORD from the brackets
+  // beside it. The draft also feeds every panel's preview below, so a typed step is
+  // reflected before it is saved.
+  const [roundDraft, setRoundDraft] = useState<string | null>(null)
+  const [roundSaving, setRoundSaving] = useState(false)
+  const [roundSaved, setRoundSaved] = useState(false)
+  const [roundError, setRoundError] = useState<string | null>(null)
+
+  // Seeded once the fetch lands, and never over a value being typed — null is "not seeded
+  // yet", which is why this is not simply initialised from productDefaults.
+  useEffect(() => {
+    if (roundDraft == null && productDefaults) setRoundDraft(String(productDefaults.tierKursRoundTo))
+  }, [productDefaults, roundDraft])
+
+  useEffect(() => {
+    if (!roundSaved) return
+    const t = setTimeout(() => setRoundSaved(false), 2000)
+    return () => clearTimeout(t)
+  }, [roundSaved])
+
+  const roundParsed = Number(roundDraft)
+  const roundValid = Number.isInteger(roundParsed) && roundParsed >= 1
+  const roundTo = roundValid ? roundParsed : (productDefaults?.tierKursRoundTo ?? 5000)
+  const roundDirty = productDefaults != null && roundDraft != null
+    && roundParsed !== productDefaults.tierKursRoundTo
+
+  // The endpoint validates every field of the record, so the whole object goes back with
+  // one figure changed — a partial body would be rejected, not merged.
+  async function saveRounding() {
+    if (!productDefaults || !roundValid) return
+    setRoundSaving(true)
+    setRoundError(null)
+    try {
+      const res = await fetch("/api/sheets/product-defaults", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...productDefaults, tierKursRoundTo: roundParsed }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? "Failed to save")
+      setRoundSaved(true)
+    } catch (err) {
+      setRoundError(err instanceof Error ? err.message : "Failed to save")
+    } finally {
+      setRoundSaving(false)
+    }
+  }
 
   return (
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
@@ -95,6 +149,41 @@ export default function KursTiersSection() {
         up&rdquo; bracket starts at 1001. A country with no flat rate charges Flat Rate
         products at cost.
       </p>
+
+      {/* Card-level, above the per-country list, because it is the one figure here that is
+          not per country. */}
+      <div className="flex flex-col gap-1 pb-3 border-b border-cream-border">
+        <label className="text-xs text-gray-500" htmlFor="rate-rounding">Rounding</label>
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            id="rate-rounding"
+            value={roundDraft ?? ""}
+            onChange={(e) => setRoundDraft(e.target.value)}
+            type="number" min="1" step="1" placeholder="5000"
+            disabled={roundSaving || productDefaults == null}
+            className={`${inputCls} w-32 shrink-0 tabular-nums`}
+          />
+          <button
+            type="button"
+            onClick={saveRounding}
+            disabled={roundSaving || !roundValid || !roundDirty}
+            className="text-xs font-medium px-3 py-1.5 rounded-lg bg-brand text-white hover:bg-brand-light transition-colors disabled:opacity-50"
+          >
+            {roundSaving ? "Saving…" : "Save"}
+          </button>
+          {roundSaved && <span className="text-xs text-green-600">Saved</span>}
+          {roundDirty && !roundSaved && <span className="text-xs text-amber-700">unsaved</span>}
+        </div>
+        {!roundValid && roundDraft != null && (
+          <p className="text-xs text-red-500">Rounding must be a whole number of at least 1.</p>
+        )}
+        {roundError && <p className="text-xs text-red-500">{roundError}</p>}
+        <span className="text-[10px] text-gray-400">
+          Prices for both Rate methods round UP to this step. Shared with nothing else, and
+          read when a product is saved — so changing it reprices each product on its next
+          save, not now.
+        </span>
+      </div>
 
       {loading && <p className="text-xs text-gray-500">Loading…</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}
@@ -429,7 +518,7 @@ function CountryBrackets({
             </span>
           </p>
           <p className="text-[10px] text-gray-400">
-            Rounded up to {fmt(roundTo)}, set under Product defaults above.
+            Rounded up to {fmt(roundTo)}, the step set at the top of this card.
           </p>
         </div>
       </div>

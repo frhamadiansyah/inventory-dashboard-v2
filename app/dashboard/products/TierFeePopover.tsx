@@ -142,8 +142,8 @@ export default function TierFeePopover({
       <p className="text-[10px] text-gray-400">
         {rounding ? (
           <>
-            Brackets are edited under Settings → Pricing and the rounding step under
-            Product defaults. Both are read when the product is saved.
+            Brackets are edited under Settings → Pricing, and the rounding step at the top
+            of the Rate card there. Both are read when the product is saved.
           </>
         ) : (
           <>

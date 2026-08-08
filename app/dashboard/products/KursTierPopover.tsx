@@ -175,7 +175,7 @@ export default function KursTierPopover({
 
       <p className="text-[10px] text-gray-400">
         {flat ? "The flat rate is" : "Brackets are"} edited under Settings → Pricing, and the
-        rounding step under Product defaults. Both are read when the product is saved.
+        rounding step at the top of that same card. Both are read when the product is saved.
       </p>
     </InfoPopover>
   )
