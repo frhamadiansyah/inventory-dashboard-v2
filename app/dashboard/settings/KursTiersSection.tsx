@@ -81,6 +81,32 @@ export default function KursTiersSection() {
       return next
     })
 
+  // Countries the owner revealed this session with the Add control below. They are not yet
+  // configured — that is the whole point — so nothing in the data would keep them on screen,
+  // and a country would vanish mid-edit the moment its draft was cleared. Cleared on reload,
+  // by which time a saved country is configured and listed on its own merit.
+  const [revealed, setRevealed] = useState<Set<number>>(new Set())
+  const [toAdd, setToAdd] = useState("")
+
+  // A country belongs on the list once it has something to show: brackets, a flat rate, or
+  // the owner having just asked for it. Listing every country made this card as long as the
+  // Currencies page and buried the two or three that are actually configured.
+  const isConfigured = (c: CountryRow) =>
+    Number(c.flatKurs) > 0 || tiersForCountry(tiers, c.id).length > 0
+
+  const visible = countries.filter((c) => isConfigured(c) || revealed.has(c.id))
+  const addable = countries.filter((c) => !isConfigured(c) && !revealed.has(c.id))
+
+  function addCountry() {
+    const id = Number(toAdd)
+    if (!id) return
+    setRevealed((prev) => new Set(prev).add(id))
+    // Opened straight away: the owner picked it in order to configure it, and landing on a
+    // collapsed row would need a second click to do the thing they just asked for.
+    setOpen((prev) => new Set(prev).add(id))
+    setToAdd("")
+  }
+
   // The rounding step lives in product_defaults, not in the bracket tables — it is one
   // number shared by both Rate methods, so it belongs to neither country and to neither
   // member. It is edited HERE rather than among the Add Product pre-fills because it is not
@@ -189,7 +215,7 @@ export default function KursTiersSection() {
       {error && <p className="text-xs text-red-500">{error}</p>}
 
       <div className="flex flex-col gap-2">
-        {countries.map((country) => (
+        {visible.map((country) => (
           <CountryBrackets
             key={country.id}
             country={country}
@@ -203,7 +229,34 @@ export default function KursTiersSection() {
         {countries.length === 0 && !loading && (
           <p className="text-xs text-gray-400">No countries yet.</p>
         )}
+        {countries.length > 0 && visible.length === 0 && !loading && (
+          <p className="text-xs text-gray-400">
+            No country has a rate configured. Add one below to start.
+          </p>
+        )}
       </div>
+
+      {/* Only the unconfigured countries, so the picker shrinks as the list above grows and
+          the same country can never be added twice. Hidden entirely once every country is
+          configured, when it could only offer an empty menu. */}
+      {addable.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            value={toAdd}
+            onChange={(e) => setToAdd(e.target.value)}
+            aria-label="Country to configure"
+            className={`${inputCls} w-56`}
+          >
+            <option value="">Add a country…</option>
+            {addable.map((c) => (
+              <option key={c.id} value={c.id}>{c.name} ({c.currency})</option>
+            ))}
+          </select>
+          <button type="button" onClick={addCountry} disabled={!toAdd} className={btnCls}>
+            Add
+          </button>
+        </div>
+      )}
 
       <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
         Brackets are read when a product is saved. Changing them doesn&apos;t reprice
