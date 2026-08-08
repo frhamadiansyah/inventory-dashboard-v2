@@ -130,8 +130,21 @@ toggle, exactly as Flat Fee is.
 - reads `countries.flat_kurs` for `countryId` via a new `getFlatKursInputs`
   in `lib/db/catalog.ts`, alongside `product_defaults.tier_kurs_round_to`, in one
   round trip inside the write transaction — same shape as `getTierKursInputs`
-- falls back to `countries.kurs` when `flat_kurs` is 0, giving the same
-  zero-spread, self-correcting failure a country with no brackets already has
+- falls back to **the rate this row books as cost** — `body.kurs`, the value being
+  snapshotted onto the product — when `flat_kurs` is 0, giving the same
+  zero-spread, self-correcting failure a country with no brackets already has.
+
+  **Not `countries.kurs`.** `lib/kurs-tiers.ts:58-61` spells out why: the fallback
+  must be the same rate cost is booked at, or the unset case produces a spread
+  instead of pricing at cost. `computeProductPrice` already honours this for
+  `tier_kurs` by passing `body.kurs` (`lib/pricing-server.ts:225`).
+
+  The client preview must use the same fallback — `costRate` in the Add form,
+  `tierKursCostRate` in the Edit modal. Note that `tier_kurs` does **not**: its
+  preview passes `selectedCountry.kurs` while the server passes `body.kurs`, and
+  those differ whenever a live rate is in play, so the no-brackets preview shows a
+  spread the save then removes. Flat Kurs does not inherit that; fixing it for
+  `tier_kurs` is out of scope here.
 - ignores `body.price` and `body.tieredKurs`
 - snapshots the resolved rate onto `products.tiered_kurs`, as `tier_kurs` does
 - carries the same Sheets-import guard: a computed 0 against a stored price > 0
@@ -213,7 +226,8 @@ it, because its rate is per country. Same toggle, opposite country behaviour —
 called out in a comment at both sites.
 
 **Charged field.** Stays read-only in both modes; only its source changes. In
-Flat mode it shows `countries.flat_kurs`, falling back to `countries.kurs`.
+Flat mode it shows `countries.flat_kurs`, falling back to the row's cost rate as
+above.
 
 **`KursTierPopover`** gains a flat variant: instead of the bracket table it names
 the country's flat rate and, when the fallback is in play, says the country has
