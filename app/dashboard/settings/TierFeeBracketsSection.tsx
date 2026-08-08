@@ -281,19 +281,27 @@ function ScopeBrackets({
                 ? (min * value) / 100
                 : null
             return (
-              <div key={i} className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-xs text-gray-400 shrink-0 w-12">from</span>
+              // No flex-wrap: a bracket is one row at every width. On a phone the two word
+              // labels move into the controls and the worked example drops, because three
+              // fixed-width controls plus a sentence wrapped into a ragged block that read as
+              // several separate settings rather than one bracket. The example is derived —
+              // it restates what this bracket charges at its own floor — so it is the one
+              // thing here that can go without losing a setting.
+              <div key={i} className="flex items-center gap-1.5">
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0 w-12">from</span>
                 <input
                   value={bracket.minBase}
                   onChange={(e) => setBracket(i, { minBase: e.target.value })}
                   type="number" min="0" step={isValas ? "any" : "1"}
-                  className={`${inputCls} w-28 shrink-0`}
+                  placeholder="from"
+                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0`}
                 />
-                <span className="text-xs text-gray-400 shrink-0">fee</span>
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0">fee</span>
                 <select
                   value={bracket.feeMode}
                   onChange={(e) => setBracket(i, { feeMode: toTierFeeMode(e.target.value) })}
-                  className={`${inputCls} w-28 shrink-0`}
+                  aria-label="Fee mode"
+                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0`}
                 >
                   <option value="fixed">{unit}</option>
                   <option value="percent">% of base</option>
@@ -302,10 +310,11 @@ function ScopeBrackets({
                   value={bracket.feeValue}
                   onChange={(e) => setBracket(i, { feeValue: e.target.value })}
                   type="number" min="0" step="any"
-                  className={`${inputCls} w-28 shrink-0`}
+                  placeholder="fee"
+                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0`}
                 />
                 {atFloor != null && (
-                  <span className="text-xs text-gray-400 shrink-0 tabular-nums">
+                  <span className="hidden md:inline text-xs text-gray-400 shrink-0 tabular-nums">
                     = {unit} {fmt2(atFloor)} at {fmt(min)}
                   </span>
                 )}
