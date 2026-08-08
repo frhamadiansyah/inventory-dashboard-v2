@@ -2,6 +2,12 @@
 // profit %, operational fee, packing fee). Edited from /dashboard/settings —
 // only changes what a *new* product form starts with, never touches existing
 // products' stored values.
+//
+// Three of these are the exception and say so on themselves: tierKursRoundTo,
+// profitMarginRoundTo and the three flat-fee figures are read when a price is COMPUTED, so
+// they move existing products on their next save.
+
+import type { PricingMethod } from "./pricing"
 
 export interface ProductDefaults {
   profitPct: number
@@ -60,6 +66,17 @@ export interface ProductDefaults {
    * stored price.
    */
   defaultCountryId: number | null
+  /**
+   * Which pricing method the Add Product form opens on (migration 055).
+   *
+   * A pre-fill, like defaultCountryId beside it: no stored product reads it, and a row's own
+   * pricing_method is what prices it.
+   *
+   * Note the three methods that need a country — overseas and both Rate methods. Pairing one
+   * of those with a null defaultCountryId is legal and simply opens the form with the Country
+   * field empty, which is the same state it had before this setting existed.
+   */
+  defaultPricingMethod: PricingMethod
 }
 
 export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
@@ -83,4 +100,7 @@ export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
   // loaded and the target of Settings' reset button — migration 052 seeds the real column with
   // the country the form used to hardcode, so an existing install keeps its behaviour.
   defaultCountryId: null,
+  // What the form hardcoded before migration 055, so an install that never touches this
+  // opens exactly where it always did.
+  defaultPricingMethod: "overseas",
 }

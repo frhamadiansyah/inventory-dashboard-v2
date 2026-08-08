@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireRole, requireOwner } from "@/lib/api"
 import { getProductDefaults, updateProductDefaults, withActor } from "@/lib/db"
 import { cached, invalidate } from "@/lib/route-cache"
+import { toPricingMethod } from "@/lib/pricing"
 
 export async function GET() {
   const { session, error: authError } = await requireSession()
@@ -34,6 +35,9 @@ export async function PATCH(req: NextRequest) {
     const markupPct = Number(body.markupPct)
     const tierKursRoundTo = Number(body.tierKursRoundTo)
     const profitMarginRoundTo = Number(body.profitMarginRoundTo)
+    // Narrowed rather than validated: toPricingMethod maps anything unknown to 'overseas',
+    // which is the column default, so a stale client cannot 400 on a field it never sent.
+    const defaultPricingMethod = toPricingMethod(body.defaultPricingMethod)
     const flatFee = Number(body.flatFee)
     const flatFeePct = Number(body.flatFeePct)
     const flatFeeMin = Number(body.flatFeeMin)
@@ -83,6 +87,7 @@ export async function PATCH(req: NextRequest) {
         updateProductDefaults({
           profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo,
           profitMarginRoundTo, flatFee, flatFeePct, flatFeeMin, defaultCountryId,
+          defaultPricingMethod,
         }, tx),
       )
     } catch (err) {

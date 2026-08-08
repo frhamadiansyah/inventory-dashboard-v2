@@ -958,6 +958,14 @@ function AddProductForm({
     // null is a real value here — "start on IDR (Rupiah)" — so it is assigned as-is rather than
     // falling back to a country.
     setCountryId(productDefaults.defaultCountryId)
+    // Which tab the form opens on (migration 055). Set alongside the country rather than in
+    // its own effect, because the two together decide what the form renders: the fee methods
+    // read the country as their rupiah/valas switch, so applying one without the other would
+    // flash a mode the owner did not configure.
+    //
+    // This runs under the same once-only ref, so it cannot fight a tab the owner has already
+    // clicked while the settings were still in flight.
+    setType(productDefaults.defaultPricingMethod)
   }, [productDefaults, seed])
 
   // Duplicate flow: when a seed product arrives, copy its fields into local

@@ -12,6 +12,7 @@ import {
 } from "@/lib/message-templates"
 import { DEFAULT_BUSINESS_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import { DEFAULT_PRODUCT_DEFAULTS, type ProductDefaults } from "@/lib/product-defaults"
+import { PRICING_METHODS, PRICING_METHOD_LABEL, toPricingMethod } from "@/lib/pricing"
 import type { CountryRow } from "@/lib/db"
 import KursTiersSection from "./KursTiersSection"
 import TierFeeBracketsSection from "./TierFeeBracketsSection"
@@ -384,6 +385,11 @@ function ProductDefaultsSection() {
     setDefaults((d) => (d ? { ...d, defaultCountryId: value === "" ? null : Number(value) } : d))
   }
 
+  // Also separate from field(): this one is a string union, not a number.
+  function setDefaultPricingMethod(value: string) {
+    setDefaults((d) => (d ? { ...d, defaultPricingMethod: toPricingMethod(value) } : d))
+  }
+
   const saveButton = (
     <button
       type="button"
@@ -456,6 +462,23 @@ function ProductDefaultsSection() {
               onChange={(e) => field("markupPct", e.target.value)}
               className={fieldInputCls}
             />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Default pricing</span>
+            <select
+              value={defaults.defaultPricingMethod}
+              onChange={(e) => setDefaultPricingMethod(e.target.value)}
+              className={fieldInputCls}
+            >
+              {PRICING_METHODS.map((m) => (
+                <option key={m} value={m}>{PRICING_METHOD_LABEL[m]}</option>
+              ))}
+            </select>
+            <span className="text-[10px] text-gray-400">
+              Which tab the Add Product form opens on. Profit Margin and both Rate methods
+              need a country, so pair one of those with a Default country below or the form
+              opens with that field empty.
+            </span>
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs text-gray-500">Default country</span>
