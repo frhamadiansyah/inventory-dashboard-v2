@@ -200,26 +200,36 @@ export async function getProductsPaginated(opts: {
     // "Overseas" rows have a country; "Domestic" rows don't.
     // Keys on pricing_method, not country_id: a Tier Kurs product HAS a country,
     // so the old `country_id IS NOT NULL` test would file it under Overseas.
-    // Ordered most-distinctive first, because the labels overlap. "Flat" and "kurs" are
-    // unique to one method each, so they go first. "markup" is tier_fee's label since it
-    // was renamed from "Tier Fee"; "mark" is enough to match it and cannot be confused
-    // with "margin", which has no "k".
+    // Ordered most-distinctive first, because the labels overlap. Since flat_kurs (migration
+    // 053) there is no keyword left that names exactly one method except "mark", so the
+    // ordering carries more weight than it used to: "flat", "kurs", "rate" and "tier" each
+    // span two, and each resolves to the pair it honestly names rather than to whichever
+    // method claimed the word first.
     //
     // Anything matching more than one method narrows to those rather than falling through:
     // an unmatched filter adds no condition at all and returns EVERY row, which reads as
     // "the filter did nothing" — worse than an imprecise answer.
-    if (t.includes("flat")) conditions.push("p.pricing_method = 'flat_fee'")
-    else if (t.includes("kurs")) conditions.push("p.pricing_method = 'tier_kurs'")
-    else if (t.includes("mark")) conditions.push("p.pricing_method = 'tier_fee'")
+    //
+    // "markup" is tier_fee's label since it was renamed from "Tier Fee"; "mark" is enough to
+    // match it and cannot be confused with "margin", which has no "k".
+    if (t.includes("mark")) conditions.push("p.pricing_method = 'tier_fee'")
+    // "rate" is the user-facing label for the family, "kurs" the stored vocabulary. Same set.
+    else if (t.includes("rate") || t.includes("kurs")) {
+      conditions.push("p.pricing_method IN ('tier_kurs', 'flat_kurs')")
+    }
+    // Both flat methods. "flat" meant flat_fee alone only while it was the only one.
+    else if (t.includes("flat")) {
+      conditions.push("p.pricing_method IN ('flat_fee', 'flat_kurs')")
+    }
     else if (t.includes("over") || t.includes("abroad") || t.includes("margin")) {
       conditions.push("p.pricing_method = 'overseas'")
     }
-    // "fee" now describes both fee-based methods — Flat Fee still carries it in its label,
+    // "fee" describes both fee-based methods — Flat Fee still carries it in its label,
     // and tier_fee is the method the Fee toggle sits inside.
     else if (t.includes("fee")) {
       conditions.push("p.pricing_method IN ('tier_fee', 'flat_fee')")
     }
-    // "tier" is ambiguous between tier_fee and tier_kurs.
+    // "tier" is ambiguous between the two bracketed methods, and means both.
     else if (t.includes("tier")) {
       conditions.push("p.pricing_method IN ('tier_fee', 'tier_kurs')")
     }
@@ -423,6 +433,34 @@ export async function getTierKursInputs(
   }
 }
 
+/**
+ * Everything the server needs to price a Flat Kurs product, in one round trip: the
+ * country's one configured rate and the shared rounding step.
+ *
+ * The rounding step is deliberately the SAME product_defaults.tier_kurs_round_to the
+ * bracketed method uses. Both Rate methods round the same way; a second setting would be
+ * two answers to one question.
+ *
+ * No countries.kurs here, on purpose: the fallback for an unset rate is the rate the row
+ * books as COST, which comes off the request body — see resolveFlatKurs().
+ *
+ * Takes a DBExecutor so it runs inside the same transaction as the write.
+ */
+export async function getFlatKursInputs(
+  countryId: number | null,
+  db: DBExecutor = sql,
+): Promise<{ flatKurs: number; roundTo: number }> {
+  const [row] = await db`
+    SELECT (SELECT flat_kurs FROM countries WHERE id = ${countryId}) AS flat_kurs,
+           (SELECT tier_kurs_round_to FROM product_defaults WHERE id = 1) AS round_to
+  `
+  return {
+    // NUMERIC as a string, and `|| 0` is right rather than `??`: 0 IS the unset value.
+    flatKurs: Number(row?.flat_kurs) || 0,
+    roundTo: Number(row?.round_to) || 5000,
+  }
+}
+
 
 /**
  * Every Flat Fee setting in one round trip: the fixed amount, the percentage, and the floor
@@ -500,10 +538,19 @@ export async function getProductPricingContext(
 export async function replaceKursTiers(
   countryId: number,
   bands: { minValas: number; kurs: number }[],
+  flatKurs: number,
   db: DBExecutor = sql,
 ): Promise<void> {
   const mins = bands.map((b) => b.minValas)
   const rates = bands.map((b) => b.kurs)
+
+  // First, because it is the statement that fails on an unknown country: failing before
+  // any bracket row is touched keeps the error about the country rather than about a
+  // foreign key on a table the caller was not thinking about.
+  await db`
+    UPDATE countries SET flat_kurs = ${flatKurs}, updated_at = NOW()
+     WHERE id = ${countryId}
+  `
 
   if (bands.length > 0) {
     await db`
@@ -636,7 +683,7 @@ export async function replaceTierFeeBrackets(
 
 export async function getCountries(): Promise<CountryRow[]> {
   const rows = await sql`
-    SELECT id, name, currency, kurs, cargo_per_kg, created_at, updated_at
+    SELECT id, name, currency, kurs, flat_kurs, cargo_per_kg, created_at, updated_at
     FROM countries ORDER BY name
   `
   return rows.map((r) => ({
@@ -645,6 +692,8 @@ export async function getCountries(): Promise<CountryRow[]> {
     currency: r.currency ?? "",
     // kurs is NUMERIC(12,4) — postgres-js returns it as a string, so coerce.
     kurs: Number(r.kurs) || 0,
+    // Same column type, same coercion.
+    flatKurs: Number(r.flat_kurs) || 0,
     cargoPerKg: r.cargo_per_kg ?? 0,
     createdAt: tsToString(r.created_at),
     updatedAt: tsToString(r.updated_at),

@@ -384,6 +384,9 @@ export interface CountryRow {
   name: string
   currency: string
   kurs: number
+  /** The rate CHARGED to a Flat Kurs product from this country (migration 053), as opposed
+   *  to `kurs`, which is what its goods COST. 0 means unset — see resolveFlatKurs(). */
+  flatKurs: number
   cargoPerKg: number
   createdAt: string
   updatedAt: string

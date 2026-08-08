@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
 import { getProductsPaginated, getProductStores, addProduct, getCountries, withActor } from "@/lib/db"
-import { computeProductPrice } from "@/lib/pricing-server"
+import { computeProductPrice, PricingInputError } from "@/lib/pricing-server"
 import { toFlatFeeMode, toPricingMethod } from "@/lib/pricing"
 
 export async function GET(req: NextRequest) {
@@ -96,6 +96,11 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, id: result.id })
   } catch (err) {
+    // The caller sent pricing inputs that cannot produce a price — a Rate row with no
+    // country, say. Their problem, not ours, so 400 with the reason rather than a 500.
+    if (err instanceof PricingInputError) {
+      return NextResponse.json({ error: err.message }, { status: 400 })
+    }
     console.error("Failed to add product:", err)
     return NextResponse.json({ error: "Failed to add product" }, { status: 500 })
   }

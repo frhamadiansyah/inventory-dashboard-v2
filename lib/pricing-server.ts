@@ -34,11 +34,21 @@ import {
   calcKursPrice, calcRupiahFeePrice, calcTierFeeValasPrice,
   flatFeeAmount, landedCost,
 } from "./pricing"
+import { isKursMethod } from "./pricing"
 import type { FlatFeeMode, PricingMethod } from "./pricing"
-import { resolveTieredKurs } from "./kurs-tiers"
+import { resolveTieredKurs, resolveFlatKurs } from "./kurs-tiers"
 import { resolveRupiahTierFee } from "./tier-fee"
-import { getTierKursInputs, getTierFeeValasInputs, getFlatFeeSettings } from "./db"
+import {
+  getTierKursInputs, getTierFeeValasInputs, getFlatFeeSettings, getFlatKursInputs,
+} from "./db"
 import type { DBExecutor } from "./db/actor"
+
+/**
+ * A request whose pricing inputs cannot produce a price. Distinct from a database failure so
+ * the routes can answer 400 rather than 500 — the caller sent something unusable, and saying
+ * which field is more useful than a generic failure.
+ */
+export class PricingInputError extends Error {}
 
 export interface ComputedPricing {
   /** Whole rupiah, for the INTEGER products.price column. */
@@ -129,6 +139,19 @@ export async function computeProductPrice(opts: {
 }): Promise<ComputedPricing> {
   const { pricingMethod, flatFeeMode, countryId, body, db, current } = opts
 
+  // Both Rate methods price as `valas × a rate this country configures`, so a Rate row with
+  // no country has no rate to be charged at and no currency to have a valas in. Rejected
+  // rather than defaulted: without this the bracket lookup matches nothing, the resolver
+  // falls back, valas arrives as 0 because the form gates it on the country, and the row
+  // saves at ceil(0 × kurs + packingFee) — Rp 5.000 for the default packing fee and rounding
+  // step. Non-zero, so the Sheets-import guard below does not catch it either. A real price
+  // was silently replaced by 5000 by clearing one field.
+  if (isKursMethod(pricingMethod) && countryId == null) {
+    throw new PricingInputError(
+      `${pricingMethod === "flat_kurs" ? "Flat Rate" : "Rate"} products need a country`,
+    )
+  }
+
   if (pricingMethod === "flat_fee") {
     const { flatFee: fixedFee, flatFeePct, flatFeeMin } = await getFlatFeeSettings(db)
 
@@ -188,6 +211,41 @@ export async function computeProductPrice(opts: {
     // the superseded per-country shape needed its own foreign-currency column for this. Cost
     // is derived, so it is returned for storage rather than taken from the body.
     return { price: computed, tieredKurs: null, profitFixed: fee, cost: landed }
+  }
+
+  // The flat sibling of tier_kurs below: one rate for the whole country, so there is no
+  // bracket to match a valas against. Everything else — which rate cost is booked at, the
+  // rounding, the snapshot onto tiered_kurs, the import guard — is identical, which is why
+  // both call calcKursPrice.
+  if (pricingMethod === "flat_kurs") {
+    const valas = Number(body.valas) || 0
+    const kurs = Number(body.kurs) || 0
+    const { flatKurs, roundTo } = await getFlatKursInputs(countryId, db)
+
+    // From the live table, never from the body — the charged rate IS this method's entire
+    // margin, so a client-supplied one would be a client-supplied margin. `kurs` is the
+    // fallback for the same reason resolveTieredKurs takes it: a country with no rate set
+    // then prices at cost rather than at a rate its cost was not booked at.
+    const chargedKurs = resolveFlatKurs(flatKurs, kurs)
+    const computed = Math.round(calcKursPrice({
+      valas, chargedKurs, kurs, roundTo,
+      gram: Number(body.gram) || 0,
+      cargoPerKg: Number(body.cargoPerKg) || 0,
+      packingFee: Number(body.packingFee) || 0,
+    }).price)
+
+    // Same Sheets-import guard the other authoritative paths carry: a row migrated from the
+    // spreadsheet holds a real price but none of the inputs a formula needs, so recomputing
+    // yields 0 and an unrelated edit would wipe it.
+    const fallback = fallbackPrice(current, body)
+    if (computed === 0 && fallback > 0) {
+      return { price: Math.round(fallback), tieredKurs: chargedKurs, profitFixed: null, cost: null }
+    }
+
+    // tiered_kurs holds "the rate this row was charged at" for BOTH Rate methods, not just
+    // the bracketed one — so the Tier Rate column reads the same column whichever member
+    // priced the row.
+    return { price: computed, tieredKurs: chargedKurs, profitFixed: null, cost: null }
   }
 
   if (pricingMethod !== "tier_kurs") {
