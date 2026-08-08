@@ -23,6 +23,7 @@ const fmt = (n: number) => n.toLocaleString("id-ID")
 export default function KursTierPopover({
   country,
   mode,
+  costRate,
   valas,
   gram,
   tiers,
@@ -33,6 +34,12 @@ export default function KursTierPopover({
   country: CountryRow | null | undefined
   /** Which Rate method is selected. Decides what the panel explains, not how it computes. */
   mode: "tier" | "flat"
+  /** The rate this row books as COST — the caller's costRate / tierKursCostRate, which is
+   *  what it will send as body.kurs. Passed in rather than derived from country.kurs so the
+   *  unset-flat-rate fallback here is the same figure the form and the server use; deriving
+   *  it would make this panel disagree with the Price field beside it whenever a live rate
+   *  is in play. */
+  costRate: number
   valas: number
   /** Shipping weight — part of cost since freight is booked into cogs. */
   gram: number
@@ -49,7 +56,7 @@ export default function KursTierPopover({
   // Same fallback rule as the form and the server, for both methods: nothing configured
   // means the cost rate, which prices the product at cost with a zero spread.
   const charged = flat
-    ? resolveFlatKurs(country?.flatKurs, country?.kurs ?? 0)
+    ? resolveFlatKurs(country?.flatKurs, costRate)
     : active ? Number(active.kurs) : (country?.kurs ?? 0)
   const flatSet = flat && country != null && Number(country.flatKurs) > 0
   const { cogs, price } = calcKursPrice({
@@ -96,8 +103,8 @@ export default function KursTierPopover({
           ) : (
             <p className="text-xs text-amber-700">
               {country.name} has no flat rate set, so these products are charged{" "}
-              {fmt(country.kurs)}, the cost rate, and there is no margin beyond the round-up.
-              Set one under Settings → Pricing.
+              {fmt(charged)}, the rate their cost is booked at, and there is no margin beyond
+              the round-up. Set one under Settings → Pricing.
             </p>
           )}
         </div>

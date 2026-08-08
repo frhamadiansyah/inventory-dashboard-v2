@@ -114,6 +114,11 @@ export async function PUT(req: NextRequest) {
     // Enough on its own: no product reprices until it is next saved, and the
     // server resolves brackets uncached inside the write transaction.
     invalidate(CACHE_KEY)
+    // This handler writes countries.flat_kurs too (migration 053), and /api/sheets/countries
+    // serves getCountries() from its own 60s cache. Without this, a saved flat rate is
+    // invisible on Settings and on the Countries page for up to a minute — long enough to
+    // read as "it did not save".
+    invalidate("countries")
     return NextResponse.json({ success: true, count: parsed.bands.length })
   } catch (err) {
     if (err instanceof Error && /foreign key/i.test(err.message)) {

@@ -1690,6 +1690,7 @@ function AddProductForm({
                 action={
                   <KursTierPopover
                     mode={type === "flat_kurs" ? "flat" : "tier"}
+                    costRate={costRate}
                     country={selectedCountry}
                     valas={Number(valas) || 0}
                     gram={Number(gram) || 0}
@@ -1786,7 +1787,10 @@ function AddProductForm({
 
       {/* Country, Valas, Gram and Price live in the merged header grid above, not here:
           Gram shares the desktop header row, and one grid is what lets it. */}
-      {type === "tier_kurs" && (
+      {/* Both Rate methods: the readout is the same node for either (readouts.flat_kurs is
+          kursReadout), and gated on tier_kurs alone a Flat Rate row lost its readout
+          entirely below md. Desktop was unaffected, which is what made it easy to miss. */}
+      {isKursMethod(type) && (
         <>
           {/* Mobile keeps the readout here, where it has always been; desktop renders it
               again in the button row. Two render sites, not a move, so mobile's ORDER
@@ -1794,7 +1798,16 @@ function AddProductForm({
               and nothing focusable, so the second copy costs only nodes. */}
           <div className="md:hidden">{readout}</div>
 
-          {selectedCountry && chargedKurs === selectedCountry.kurs && (
+          {/* Flat's own "nothing configured" warning is the one below; this test is
+              tier-specific — a flat row's fallback is costRate, not selectedCountry.kurs. */}
+          {type === "flat_kurs" && selectedCountry && !(Number(selectedCountry.flatKurs) > 0) && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              {selectedCountry.name} has no flat rate, so this product is charged its cost
+              rate and there is no margin. Set one in Settings → Pricing.
+            </p>
+          )}
+
+          {type === "tier_kurs" && selectedCountry && chargedKurs === selectedCountry.kurs && (
             <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               No kurs bracket covers this valas for {selectedCountry.name}, so the flat
               rate is used and there is no margin. Add brackets in Settings → Pricing.
@@ -2631,6 +2644,7 @@ function EditProductModal({
                 {draftKurs && (
                   <KursTierPopover
                     mode={draft.method === "flat_kurs" ? "flat" : "tier"}
+                    costRate={tierKursCostRate}
                     country={draftCountry}
                     valas={Number(draft.valas) || 0}
                     gram={Number(draft.gram) || 0}
@@ -2645,7 +2659,11 @@ function EditProductModal({
           </div>
         ) : null}
 
-        {draftTierKurs && (
+        {/* Both Rate methods, not just the bracketed one: they share every field in here —
+            Gram and Pack Fee both feed the same formula, and the price readout is the same
+            editCalc. Gated on tier_kurs alone, a Flat Rate row lost the whole pricing half
+            of the modal. */}
+        {draftKurs && (
           <>
             {/* Pack Fee is editable here for the same reason as in the Add form: it is part
                 of the price, so hiding it would leave the price unexplained. */}
@@ -2676,12 +2694,23 @@ function EditProductModal({
               </div>
             )}
 
-            {draftCountry && draftChargedKurs === draftCountry.kurs && (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                No kurs bracket covers this valas for {draftCountry.name}, so the flat rate
-                is used and there is no margin. Add brackets in Settings → Pricing.
-              </p>
-            )}
+            {/* "Nothing configured" reads differently per method, and so does the test for
+                it: Tier compares against the country's own rate, while Flat's fallback is
+                tierKursCostRate, so comparing it to draftCountry.kurs would both miss the
+                real case and fire on a live-rate row that is fine. */}
+            {draftFlatKurs
+              ? draftCountry && !(Number(draftCountry.flatKurs) > 0) && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    {draftCountry.name} has no flat rate, so this product is charged its cost
+                    rate and there is no margin. Set one in Settings → Pricing.
+                  </p>
+                )
+              : draftCountry && draftChargedKurs === draftCountry.kurs && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    No kurs bracket covers this valas for {draftCountry.name}, so the flat rate
+                    is used and there is no margin. Add brackets in Settings → Pricing.
+                  </p>
+                )}
           </>
         )}
 

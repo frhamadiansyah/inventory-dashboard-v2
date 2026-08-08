@@ -14,7 +14,7 @@
 // clicking. Each row keeps its own draft and its own Save, because the API writes
 // one country's whole set at a time.
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useKursTiers } from "@/hooks/useKursTiers"
 import { resolveTieredKurs, tiersForCountry } from "@/lib/kurs-tiers"
 import { calcKursPrice, kursProfit } from "@/lib/pricing"
@@ -41,12 +41,27 @@ export default function KursTiersSection() {
   const autoOpened = useRef(false)
 
   // /api/sheets/countries returns { rows }, not { countries }.
-  useEffect(() => {
-    fetch("/api/sheets/countries", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((j) => setCountries((j.rows ?? []) as CountryRow[]))
-      .catch(() => {})
+  //
+  // Hoisted out of the effect because a save has to re-run it: the flat rate lives on the
+  // COUNTRY, so `reload` from useKursTiers — which refetches brackets only — would leave
+  // country.flatKurs at its page-load value, and the panel's re-seed effect would then snap
+  // the field back to the pre-save number the moment Save cleared `dirty`.
+  const loadCountries = useCallback(async () => {
+    try {
+      const res = await fetch("/api/sheets/countries", { cache: "no-store" })
+      const json = await res.json()
+      setCountries((json.rows ?? []) as CountryRow[])
+    } catch {
+      // Leave the previous list in place; the panel keeps working off what it has.
+    }
   }, [])
+
+  useEffect(() => { loadCountries() }, [loadCountries])
+
+  // Both halves of one Save, so both have to be refetched before the panel re-seeds.
+  const reloadAll = useCallback(async () => {
+    await Promise.all([reload(), loadCountries()])
+  }, [reload, loadCountries])
 
   // Expand the already-configured countries once, on first load — that is what
   // the owner came here to look at. Guarded by a ref so a post-save reload never
@@ -93,7 +108,7 @@ export default function KursTiersSection() {
             roundTo={roundTo}
             open={open.has(country.id)}
             onToggle={() => toggle(country.id)}
-            onSaved={reload}
+            onSaved={reloadAll}
           />
         ))}
         {countries.length === 0 && !loading && (
