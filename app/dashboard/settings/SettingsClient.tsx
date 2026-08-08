@@ -128,11 +128,14 @@ export default function SettingsClient() {
       <div className={tab === "business" ? "" : "hidden"}>
         <BusinessProfileSection />
       </div>
-      {/* Every card here is pricing config, so they share one tab. Product defaults first —
-          it owns the rounding step both Rate methods round to — then the per-method cards in
-          PRICING_METHODS order. ProductDefaultsSection renders TWO of them: it also owns the
-          Markup Flat card, because those three figures live in the same record and the same
-          Save. */}
+      {/* Every card here is pricing config, so they share one tab. Product defaults holds
+          what is common to more than one method; the rest are per method, in
+          PRICING_METHODS order.
+
+          ProductDefaultsSection renders THREE of them — Product defaults, Profit Margin and
+          Markup Flat — because all of those fields live in one product_defaults row behind
+          one Save. Splitting the component would mean three components racing to write the
+          same record. */}
       <div className={`flex flex-col gap-6 ${tab === "product-defaults" ? "" : "hidden"}`}>
         <ProductDefaultsSection />
         <TierFeeBracketsSection />
@@ -428,15 +431,6 @@ function ProductDefaultsSection() {
       {defaults && (
         <div className="grid md:grid-cols-3 gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Profit %</span>
-            <input
-              type="number"
-              value={defaults.profitPct}
-              onChange={(e) => field("profitPct", e.target.value)}
-              className={fieldInputCls}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
             <span className="text-xs text-gray-500">Operational fee</span>
             <input
               type="number"
@@ -481,6 +475,45 @@ function ProductDefaultsSection() {
               Which country the Add Product form starts on. For Markup and Flat Fee this also
               decides whether that form opens with a typed base cost (IDR) or one derived from
               valas.
+            </span>
+          </label>
+        </div>
+      )}
+    </div>
+
+    {/* Profit Margin's one setting. Ahead of Markup Flat because the per-method cards run in
+        PRICING_METHODS order, and `overseas` is first.
+
+        Unlike the Markup Flat figures below, this one IS a pre-fill: every Profit Margin
+        product stores its own profit_pct, and the server prices from the row's copy, so
+        changing this moves nothing that already exists. */}
+    <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h2 className="text-sm font-semibold text-foreground">Profit Margin</h2>
+        <div className="flex items-center gap-3">
+          {saved && <span className="text-xs text-green-600">Saved</span>}
+          {saveButton}
+        </div>
+      </div>
+
+      <p className="text-[10px] text-gray-400">
+        The margin a Profit Margin product opens with. Price is cost ÷ (1 − this), plus the
+        operational and packing fees. Each product keeps its own copy, so editing this
+        changes nothing that already exists.
+      </p>
+
+      {defaults && (
+        <div className="grid md:grid-cols-3 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Profit %</span>
+            <input
+              type="number"
+              value={defaults.profitPct}
+              onChange={(e) => field("profitPct", e.target.value)}
+              className={fieldInputCls}
+            />
+            <span className="text-[10px] text-gray-400">
+              100 or more leaves nothing to divide into, so the price computes as 0.
             </span>
           </label>
         </div>
