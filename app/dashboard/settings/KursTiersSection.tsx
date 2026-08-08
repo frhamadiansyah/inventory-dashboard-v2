@@ -504,13 +504,18 @@ function CountryBrackets({
                   placeholder="charge"
                   className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-32 md:shrink-0`}
                 />
-                {markup != null && (
-                  <span
-                    className={`text-xs shrink-0 tabular-nums ${markup >= 0 ? "text-green-700" : "text-red-600"}`}
-                  >
-                    {markup >= 0 ? "+" : ""}{markup.toFixed(1)}%
-                  </span>
-                )}
+                {/* Always rendered, at a fixed width, even when there is no markup to show.
+                    The inputs beside it are flex-1 on mobile, so they absorb whatever this
+                    leaves — a variable-width or absent percentage sized every row's boxes
+                    differently and the column of brackets came out ragged. w-14 fits
+                    "+100.0%", the widest this can be for a sane rate. */}
+                <span
+                  className={`w-14 shrink-0 text-right text-xs tabular-nums ${
+                    markup == null ? "text-transparent" : markup >= 0 ? "text-green-700" : "text-red-600"
+                  }`}
+                >
+                  {markup != null && `${markup >= 0 ? "+" : ""}${markup.toFixed(1)}%`}
+                </span>
                 <button
                   type="button"
                   onClick={() => {
