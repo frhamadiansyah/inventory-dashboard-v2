@@ -483,20 +483,26 @@ function CountryBrackets({
                 ? (kurs / country.kurs - 1) * 100
                 : null
             return (
-              <div key={i} className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-xs text-gray-400 shrink-0 w-20">from valas</span>
+              // No flex-wrap: a bracket is one row at every width. On a phone the two word
+              // labels move into the inputs as placeholders and the inputs share whatever is
+              // left, because "from valas 5000 charge 226" wrapped into a ragged three-line
+              // block that read as three separate controls rather than one bracket.
+              <div key={i} className="flex items-center gap-1.5">
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0 w-20">from valas</span>
                 <input
                   value={band.minValas}
                   onChange={(e) => setBand(i, { minValas: e.target.value })}
                   type="number" min="0" step="any"
-                  className={`${inputCls} w-32 shrink-0`}
+                  placeholder="from valas"
+                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-32 md:shrink-0`}
                 />
-                <span className="text-xs text-gray-400 shrink-0">charge</span>
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0">charge</span>
                 <input
                   value={band.kurs}
                   onChange={(e) => setBand(i, { kurs: e.target.value })}
                   type="number" min="0" step="any"
-                  className={`${inputCls} w-32 shrink-0`}
+                  placeholder="charge"
+                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-32 md:shrink-0`}
                 />
                 {markup != null && (
                   <span
