@@ -68,13 +68,17 @@ export default function KursTiersSection() {
 
   return (
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
-      <h2 className="text-sm font-semibold text-foreground">Tier Kurs brackets</h2>
+      <h2 className="text-sm font-semibold text-foreground">Rate</h2>
 
       <p className="text-xs text-gray-500">
-        Products priced with the <span className="font-medium">Tier Kurs</span>{" "}
-        method are charged the rate for the bracket their valas falls into, instead of the
-        country&apos;s flat rate. Highest matching minimum wins, and minimums are
-        inclusive — so a &ldquo;1001 and up&rdquo; bracket starts at 1001.
+        Both <span className="font-medium">Rate</span> methods charge an exchange rate above
+        what the goods cost. <span className="font-medium">Flat Rate</span> products are
+        charged the country&apos;s one flat rate whatever the valas;{" "}
+        <span className="font-medium">Tier Rate</span> products are charged the rate for the
+        bracket their valas falls into. A country can serve both — set either, or both.
+        Highest matching minimum wins, and minimums are inclusive, so a &ldquo;1001 and
+        up&rdquo; bracket starts at 1001. A country with no flat rate charges Flat Rate
+        products at cost.
       </p>
 
       {loading && <p className="text-xs text-gray-500">Loading…</p>}
@@ -127,6 +131,9 @@ function CountryBrackets({
   onSaved: () => Promise<void>
 }) {
   const [draft, setDraft] = useState<BandDraft[]>([])
+  // The flat rate lives beside the brackets rather than in its own card: it is the
+  // alternative to them, one Save covers both, and the API writes both in one transaction.
+  const [flatDraft, setFlatDraft] = useState(String(country.flatKurs))
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -142,12 +149,15 @@ function CountryBrackets({
   const storedKey = stored.map((t) => `${t.minValas}:${t.kurs}`).join("|")
   const latestStored = useRef(stored)
   latestStored.current = stored
+  // country.flatKurs joins storedKey in the dependencies: a save reloads the countries list,
+  // and without it the field would keep showing the pre-save value.
   useEffect(() => {
     if (dirty) return
     setDraft(
       latestStored.current.map((t) => ({ minValas: String(t.minValas), kurs: String(t.kurs) })),
     )
-  }, [storedKey, dirty])
+    setFlatDraft(String(country.flatKurs))
+  }, [storedKey, dirty, country.flatKurs])
 
   useEffect(() => {
     if (!saved) return
@@ -162,6 +172,11 @@ function CountryBrackets({
 
   const problems = useMemo(() => {
     const out: string[] = []
+    // Empty is not 0 — an owner who clears the field means "no flat rate", which IS 0. But a
+    // negative or unparseable one is a typo, and saving it would price at cost with no sign
+    // that anything was wrong.
+    const flat = flatDraft.trim() === "" ? 0 : Number(flatDraft)
+    if (!Number.isFinite(flat) || flat < 0) out.push("Flat rate must be 0 or more")
     const seen = new Set<number>()
     draft.forEach((b, i) => {
       const where = `Bracket ${i + 1}`
@@ -179,7 +194,7 @@ function CountryBrackets({
       }
     })
     return out
-  }, [draft])
+  }, [draft, flatDraft])
 
   // The real resolver AND the real formula, over the draft — so the readout
   // previews unsaved edits and includes the configured rounding step.
@@ -224,6 +239,7 @@ function CountryBrackets({
         body: JSON.stringify({
           countryId: country.id,
           bands: draft.map((b) => ({ minValas: Number(b.minValas), kurs: Number(b.kurs) })),
+          flatKurs: flatDraft.trim() === "" ? 0 : Number(flatDraft),
         }),
       })
       const json = await res.json()
@@ -262,19 +278,45 @@ function CountryBrackets({
         <span className="flex-1" />
         {dirty && <span className="text-xs text-amber-700 shrink-0">unsaved</span>}
         {saved && <span className="text-xs text-green-600 shrink-0">Saved</span>}
-        <span className={`text-xs shrink-0 tabular-nums ${draft.length > 0 ? "text-gray-500" : "text-gray-400"}`}>
-          {draft.length === 0
-            ? "no brackets"
-            : `${draft.length} bracket${draft.length > 1 ? "s" : ""}${spread ? ` · ${spread}` : ""}`}
+        {/* The header answers "which countries are configured, and how" without expanding,
+            so the flat rate belongs beside the bracket summary rather than behind a click. */}
+        <span className={`text-xs shrink-0 tabular-nums ${draft.length > 0 || Number(flatDraft) > 0 ? "text-gray-500" : "text-gray-400"}`}>
+          {[
+            Number(flatDraft) > 0 ? `flat ${fmt(Number(flatDraft))}` : null,
+            draft.length === 0
+              ? null
+              : `${draft.length} bracket${draft.length > 1 ? "s" : ""}${spread ? ` · ${spread}` : ""}`,
+          ].filter(Boolean).join(" · ") || "not configured"}
         </span>
       </button>
 
       <div className={`px-3 pb-3 flex flex-col gap-2 ${open ? "" : "hidden"}`}>
+        {/* Above the brackets and ruled off from them: it is the alternative to them, not
+            one of them, and the two methods it serves are picked by a toggle on the product
+            rather than by anything here. */}
+        <div className="flex flex-col gap-1 pb-3 mb-1 border-b border-cream-border">
+          <label className="text-xs text-gray-500">Flat rate (IDR)</label>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              value={flatDraft}
+              onChange={(e) => { setFlatDraft(e.target.value); setDirty(true) }}
+              type="number" min="0" step="any" placeholder="0"
+              disabled={saving}
+              className={`${inputCls} w-32 shrink-0 tabular-nums`}
+            />
+            <span className="text-xs text-gray-400">
+              {Number(flatDraft) > 0
+                ? `charged to Flat Rate products · costs ${fmt(country.kurs)}`
+                : `not set — Flat Rate products are charged ${fmt(country.kurs)}, the cost rate, for no margin`}
+            </span>
+          </div>
+        </div>
+
         <div className="flex flex-col gap-1.5">
           {draft.length === 0 && (
             <p className="text-xs text-gray-400">
-              No brackets. Tier Kurs products for {country.name} are priced at the flat
-              rate of {fmt(country.kurs)}, with no margin.
+              No brackets. Tier Rate products for {country.name} are charged{" "}
+              {fmt(country.kurs)}, the cost rate, with no margin.
             </p>
           )}
           {draft.map((band, i) => {

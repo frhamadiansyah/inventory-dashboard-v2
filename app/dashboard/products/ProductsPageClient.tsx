@@ -16,9 +16,9 @@ import {
   calcAbroadPrice, calcRupiahFeePrice, abroadProfit, calcKursPrice, kursProfit,
   calcFlatFeeValasPrice, flatFeeAmount, flatFeeFloorApplies, landedCost, type FlatFeeMode,
   calcTierFeeValasPrice,
-  PRICING_METHOD_LABEL, type PricingMethod,
+  PRICING_METHOD_LABEL, isKursMethod, type PricingMethod,
 } from "@/lib/pricing"
-import { resolveTieredKurs, tiersForCountry } from "@/lib/kurs-tiers"
+import { resolveTieredKurs, resolveFlatKurs, tiersForCountry } from "@/lib/kurs-tiers"
 import {
   resolveTierFee, resolveRupiahTierFee, bracketsForScope, DEFAULT_RUPIAH_TIER_FEE_BRACKETS,
 } from "@/lib/tier-fee"
@@ -119,8 +119,11 @@ function isAbroad(p: ProductRow) {
   return p.pricingMethod === "overseas"
 }
 
-function isTierKurs(p: ProductRow) {
-  return p.pricingMethod === "tier_kurs"
+/** True for either Rate method. Both book freight into cost and both snapshot the rate they
+ *  were charged at onto products.tiered_kurs, so the two columns gated on this are true of
+ *  the pair rather than of the bracketed one alone. */
+function isKursProduct(p: ProductRow) {
+  return isKursMethod(p.pricingMethod)
 }
 
 /** True for a row priced from a rupiah base cost plus a rupiah fee — which since
@@ -143,7 +146,10 @@ function usesRupiahCost(p: ProductRow) {
  *  purpose: a country is optional there, and whether it has one is exactly what
  *  chooses between its rupiah and valas modes. */
 function methodNeedsCountry(m: PricingMethod) {
-  return m === "overseas" || m === "tier_kurs"
+  // Both Rate methods resolve their charged rate from the country — brackets for one, the
+  // country's flat rate for the other — so neither has a domestic form. This is the opposite
+  // of the fee pair, where Flat CLEARS the country because its fee is a rupiah setting.
+  return m === "overseas" || isKursMethod(m)
 }
 
 /** Every method may now carry a country, so what a country MEANS is the only thing that
@@ -406,6 +412,9 @@ export default function ProductsPageClient() {
           tier_fee: "bg-green-50 text-green-600",
           flat_fee: "bg-amber-50 text-amber-700",
           tier_kurs: "bg-purple-50 text-purple-600",
+          // One step from its sibling: the pair reads as a family without the two being
+          // mistakable for each other at a glance down the column.
+          flat_kurs: "bg-violet-50 text-violet-600",
         }
         return (
           <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${tone[method]}`}>
@@ -458,7 +467,7 @@ export default function ProductsPageClient() {
       // Only Tier Kurs rows have one; the rest store NULL.
       cell: ({ row }) => (
         <span className="tabular-nums">
-          {isTierKurs(row.original) && row.original.tieredKurs != null
+          {isKursProduct(row.original) && row.original.tieredKurs != null
             ? fmt(row.original.tieredKurs)
             : "—"}
         </span>
@@ -472,7 +481,7 @@ export default function ProductsPageClient() {
       filterFn: "numeric",
       enableColumnFilter: false,
       // Tier Kurs books freight into its cost too, so its rate is no longer a dash.
-      cell: ({ row }) => <span className="tabular-nums">{isAbroad(row.original) || isTierKurs(row.original) ? fmt(row.original.cargoPerKg) : "—"}</span>,
+      cell: ({ row }) => <span className="tabular-nums">{isAbroad(row.original) || isKursProduct(row.original) ? fmt(row.original.cargoPerKg) : "—"}</span>,
       meta: { align: "right" },
     },
     {
@@ -984,11 +993,13 @@ function AddProductForm({
         setPackFee(String(seed.packingFee ?? 5000))
         break
       case "tier_kurs":
-        // The pack fee is part of this method's price — ceil(valas × rate + packFee) — so a
+      case "flat_kurs":
+        // The pack fee is part of both methods' price — ceil(valas × rate + packFee) — so a
         // duplicate that dropped it repriced itself against the Settings default.
         //
-        // The RATE is deliberately not copied: the server re-resolves it from the duplicated
-        // valas, so a stale snapshot must not ride along.
+        // The RATE is deliberately not copied for either: the server re-resolves it, from
+        // the duplicated valas for Tier and from the country for Flat, so a stale snapshot
+        // must not ride along.
         setPackFee(String(seed.packingFee ?? 5000))
         break
       case "tier_fee":
@@ -1046,18 +1057,7 @@ function AddProductForm({
     : 0
   const valasFee = tierFeeValas ? resolveRupiahTierFee(scopedFeeBrackets ?? [], valasBase) : 0
 
-  const chargedKurs = useMemo(
-    () => (selectedCountry
-      ? resolveTieredKurs(
-          tiersForCountry(kursTiers, selectedCountry.id),
-          Number(valas) || 0,
-          selectedCountry.kurs,
-        )
-      : 0),
-    [kursTiers, selectedCountry, valas],
-  )
-
-  // Tier Kurs books cost at the country's MARKUP RATE — the live mid-market rate plus
+  // Both Rate methods book cost at the country's MARKUP RATE — the live mid-market rate plus
   // product_defaults.markup_pct — not at the stored countries.kurs. That stored figure is
   // hand-entered from this same calculation (see the Live rate / Markup rate boxes on the
   // Countries page), so it is only ever as fresh as the last time someone typed it.
@@ -1065,10 +1065,34 @@ function AddProductForm({
   // It falls back to the stored rate whenever there is no live one: a third-party endpoint
   // being reachable must not decide whether a product can be saved. `costRateIsLive` says
   // which of the two is in play, so the readout can never be ambiguous about it.
+  //
+  // Declared ABOVE chargedKurs, which reads costRate during render. Below it, the flat
+  // branch would hit the temporal dead zone — see 9eda039, where exactly that shape threw
+  // "Cannot access 'Q' before initialization" on every Tier Kurs edit.
   const { rate: liveRate, loading: liveRateLoading } = useLiveIdrRate(selectedCountry?.currency ?? "")
   const liveMarkupRate = markupRate(liveRate, productDefaults?.markupPct ?? DEFAULT_PRODUCT_DEFAULTS.markupPct)
   const costRate = liveMarkupRate ?? selectedCountry?.kurs ?? 0
   const costRateIsLive = liveMarkupRate != null
+
+  // The rate this valas will be charged, for whichever Rate method is selected.
+  //
+  // The flat fallback is costRate, not selectedCountry.kurs, and it must be: the server
+  // resolves against body.kurs — the snapshot this form is about to send — so anything else
+  // would preview a spread the save then removes. The tiered branch below still falls back to
+  // selectedCountry.kurs, which is that same mismatch; widening it would move the preview for
+  // every bracket-less country, which is a repricing decision rather than a cleanup.
+  const chargedKurs = useMemo(
+    () => {
+      if (!selectedCountry) return 0
+      if (type === "flat_kurs") return resolveFlatKurs(selectedCountry.flatKurs, costRate)
+      return resolveTieredKurs(
+        tiersForCountry(kursTiers, selectedCountry.id),
+        Number(valas) || 0,
+        selectedCountry.kurs,
+      )
+    },
+    [kursTiers, selectedCountry, valas, type, costRate],
+  )
 
   // The Flat Fee method's fee. Settings owns BOTH figures and the server re-reads them on
   // save, so this is only ever used to render the preview.
@@ -1109,7 +1133,9 @@ function AddProductForm({
       })
       return { cogs, price }
     }
-    if (type === "tier_kurs") {
+    // Both Rate methods, one branch: the formula is identical and only chargedKurs above
+    // knows which rate it resolved.
+    if (isKursMethod(type)) {
       return calcKursPrice({
         valas: Number(valas) || 0,
         chargedKurs,
@@ -1178,9 +1204,10 @@ function AddProductForm({
         body.profitPct = Number(profitPct) || 0
         body.operationalFee = Number(opFee) || 0
         body.packingFee = Number(packFee) || 0
-      } else if (type === "tier_kurs") {
-        // No tieredKurs and no price: the server resolves the bracket itself and
-        // ignores anything sent for either. countryId is what it keys the lookup on.
+      } else if (isKursMethod(type)) {
+        // No tieredKurs and no price: the server resolves the rate itself — from the
+        // brackets for Tier, from the country's flat rate for Flat — and ignores anything
+        // sent for either. countryId is what it keys the lookup on, for both.
         body.countryId = countryId
         body.valas = Number(valas) || 0
         // The markup rate, snapshotted. products.kurs has always been a save-time
@@ -1310,6 +1337,37 @@ function AddProductForm({
     </Field>
   )
 
+  // Where the charged rate comes from, which is the whole difference between tier_kurs and
+  // flat_kurs: Tier looks it up from that country's brackets, Flat takes the country's one
+  // configured rate. Both are re-resolved by the server on save.
+  //
+  // Unlike feeSourceToggle above, NEITHER side touches the country — both methods need one,
+  // because a rate is meaningless without a currency to be a rate for. The fee pair's Flat
+  // clears it, which is the opposite. The two toggles look identical and behave differently
+  // on purpose.
+  const rateSourceToggle = (
+    <Field label="Rate">
+      <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs">
+        <button
+          type="button"
+          onClick={() => setType("tier_kurs")}
+          disabled={adding}
+          className={`flex-1 px-3 py-2.5 transition-colors ${type === "tier_kurs" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
+        >
+          Tier
+        </button>
+        <button
+          type="button"
+          onClick={() => setType("flat_kurs")}
+          disabled={adding}
+          className={`flex-1 px-3 py-2.5 transition-colors ${type === "flat_kurs" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
+        >
+          Flat
+        </button>
+      </div>
+    </Field>
+  )
+
   // The Country field doubles as the rupiah/valas switch, which is why there is no
   // "Priced in" toggle: "IDR (Rupiah)" is a real option whose value is "", and that maps
   // straight onto countryId null — the stored row's own definition of rupiah mode. One
@@ -1364,6 +1422,40 @@ function AddProductForm({
   )
   const profitTone = (n: number) => `font-semibold ${n >= 0 ? "text-green-700" : "text-red-600"}`
 
+  // No profit %, no cargo, no fees: the margin is the spread between the charged rate and
+  // the actual one. Shared by BOTH Rate methods — their cost side is identical, and only
+  // where chargedKurs came from differs — so it is one node assigned to two keys rather
+  // than a copy that would be a second thing to keep in step.
+  const kursReadout = selectedCountry
+    ? readoutBar(
+        <>
+          {/* The rate cost is actually booked at. Labelled "STORED" on the fallback path
+              so it is never unclear which of the two rates produced COST. */}
+          <span>
+            {liveRateLoading ? "MARKUP RATE: …" : (
+              <>
+                MARKUP RATE: Rp {fmtRp2(costRate)}
+                {!costRateIsLive && <span className="text-amber-700"> (stored)</span>}
+              </>
+            )}
+          </span>
+          {/* Cost carries a freight term now, so the rate behind it has to be visible —
+              otherwise COST is an unexplained number. Same span the overseas readout has
+              always had. */}
+          <span>SHIPPING/KG: {fmt(selectedCountry.cargoPerKg)}</span>
+          <span>COST: {fmt(Math.round(pricePreview.cogs))}</span>
+          {/* No PACK FEE span: it is an editable field in the row above, so repeating it
+              here was the only duplicated figure in any of these bars. Still SUBTRACTED
+              from profit below, as the overseas readout does with its two fees — the
+              charge is recovered through the price, not margin. One consequence worth
+              knowing: price − COST will exceed PROFIT by the pack fee. */}
+          <span className={profitTone(kursProfit({ ...pricePreview, packingFee: Number(packFee) || 0 }))}>
+            PROFIT: Rp {fmt(kursProfit({ ...pricePreview, packingFee: Number(packFee) || 0 }))}
+          </span>
+        </>,
+      )
+    : null
+
   const readouts: Record<PricingMethod, React.ReactNode> = {
     overseas: selectedCountry
       ? readoutBar(
@@ -1382,37 +1474,8 @@ function AddProductForm({
         )
       : null,
 
-    // No profit %, no cargo, no fees: the margin is the spread between the charged rate
-    // and the actual one. Brackets are edited in Settings.
-    tier_kurs: selectedCountry
-      ? readoutBar(
-          <>
-            {/* The rate cost is actually booked at. Labelled "STORED" on the fallback path
-                so it is never unclear which of the two rates produced COST. */}
-            <span>
-              {liveRateLoading ? "MARKUP RATE: …" : (
-                <>
-                  MARKUP RATE: Rp {fmtRp2(costRate)}
-                  {!costRateIsLive && <span className="text-amber-700"> (stored)</span>}
-                </>
-              )}
-            </span>
-            {/* Cost carries a freight term now, so the rate behind it has to be
-                visible — otherwise COST is an unexplained number. Same span the
-                overseas readout has always had. */}
-            <span>SHIPPING/KG: {fmt(selectedCountry.cargoPerKg)}</span>
-            <span>COST: {fmt(Math.round(pricePreview.cogs))}</span>
-            {/* No PACK FEE span: it is an editable field in the row above, so repeating it
-                here was the only duplicated figure in any of these bars. Still SUBTRACTED
-                from profit below, as the overseas readout does with its two fees — the
-                charge is recovered through the price, not margin. One consequence worth
-                knowing: price − COST will exceed PROFIT by the pack fee. */}
-            <span className={profitTone(kursProfit({ ...pricePreview, packingFee: Number(packFee) || 0 }))}>
-              PROFIT: Rp {fmt(kursProfit({ ...pricePreview, packingFee: Number(packFee) || 0 }))}
-            </span>
-          </>,
-        )
-      : null,
+    tier_kurs: kursReadout,
+    flat_kurs: kursReadout,
 
     // Two shapes, because the modes have different inputs: valas mode has a rate and a
     // converted fee to account for, rupiah mode is just cost + the typed fee. Both end in
@@ -1483,7 +1546,11 @@ function AddProductForm({
             either of the two. */}
         <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs">
           {METHOD_TABS.map((m) => {
-            const active = m === "tier_fee" ? isFeeMethod(type) : type === m
+            const active = m === "tier_fee"
+              ? isFeeMethod(type)
+              : m === "tier_kurs"
+                ? isKursMethod(type)
+                : type === m
             return (
               <button
                 key={m}
@@ -1550,20 +1617,21 @@ function AddProductForm({
             </Field>
           </div>
         </div>
-      ) : type === "tier_kurs" ? (
+      ) : isKursMethod(type) ? (
         // Tier Kurs renders no shared header: its Gram belongs on the header row on
         // desktop, so Store, Name, Gram, Country, Valas and Price all have to live in
         // ONE grid for spans and order to reach across what are two visual rows.
         //
-        //   mobile     16+8 | 24 | 12+12 | 24 — Name+Gram, Store, Country+Valas, then the
-        //                                        Charged / Pack Fee / Price expression
-        //   md and up  8+12+4 | 3+5+16            — Store+Name+Gram, then
-        //                                           Country+Valas+(× Charged i = Price)
+        //   mobile     16+8 | 24 | 12+12 | 24 | 24 — Name+Gram, Store, Rate+Country, Valas,
+        //                                             then the Charged / Pack Fee / Price
+        //                                             expression
+        //   md and up  8+12+4 | 3+3+4+14           — Store+Name+Gram, then Rate+Country+
+        //                                             Valas+(× Charged i = Price)
         //
-        // Twenty-four columns because Country and Valas TOGETHER have to equal Store's
-        // 8, which 12 columns could not split unevenly: 3 and 5, Valas the wider of the
-        // two. The remaining 16 go to one cell holding the whole
-        // `× Charged = Price` expression, so the row fills edge to edge with no gap.
+        // Twenty-four columns because the Rate toggle, Country and Valas TOGETHER have to
+        // equal Store's 8 — 3, 3 and 4 — which 12 columns could not split that way. The
+        // remaining 14 go to one cell holding the whole `× Charged = Price` expression, so
+        // the row fills edge to edge with no gap. Before the Rate toggle it was 3+5+16.
         //
         // Mobile is DOM order with no order classes, so nothing there depends on the md
         // orders below. Between sm and md the fields show the mobile two-across shape
@@ -1577,8 +1645,12 @@ function AddProductForm({
           <div className="col-span-8 md:col-span-4 md:order-3">{gramField}</div>
           <div className="col-span-24 md:col-span-8 md:order-1">{storeField}</div>
 
-          <div className="col-span-12 md:col-span-3 md:order-4">
+          <div className="col-span-12 md:col-span-3 md:order-4">{rateSourceToggle}</div>
+          <div className="col-span-12 md:col-span-3 md:order-5">
             <Field label="Country">
+              {/* Countries only — no "IDR (Rupiah)" option and not clearable, unlike the
+                  hoisted countrySelect the fee methods use. Both Rate methods need a
+                  country, and the server rejects a Rate row without one. */}
               <SearchableSelect
                 value={countryId != null ? String(countryId) : ""}
                 onChange={(v) => setCountryId(v ? Number(v) : null)}
@@ -1590,7 +1662,7 @@ function AddProductForm({
               />
             </Field>
           </div>
-          <div className="col-span-12 md:col-span-5 md:order-5">
+          <div className="col-span-24 md:col-span-4 md:order-6">
             <Field label="Valas">
               <input value={valas} onChange={(e) => setValas(e.target.value)} type="number" step="any" min="0" placeholder="0" disabled={adding} className={formInputCls} />
             </Field>
@@ -1607,7 +1679,7 @@ function AddProductForm({
               grid cells: the × and = have to sit between them, and flex gives the
               glyphs their natural width while the two boxes split whatever is left.
               Column arithmetic would have had to guess a span for a glyph. */}
-          <div className="col-span-24 md:col-span-16 md:order-6 flex items-start gap-2">
+          <div className="col-span-24 md:col-span-14 md:order-7 flex items-start gap-2">
             {/* Decorative — the popover spells the formula out properly. */}
             <div className="hidden md:block" aria-hidden>{operator("×")}</div>
             <div className="flex-1 min-w-0">
@@ -1617,6 +1689,7 @@ function AddProductForm({
                 label="Charged"
                 action={
                   <KursTierPopover
+                    mode={type === "flat_kurs" ? "flat" : "tier"}
                     country={selectedCountry}
                     valas={Number(valas) || 0}
                     gram={Number(gram) || 0}
@@ -2152,6 +2225,9 @@ function EditProductModal({
   const draftCountry = countries.find((c) => c.id === draft.countryId)
   const draftAbroad = draft.method === "overseas"
   const draftTierKurs = draft.method === "tier_kurs"
+  const draftFlatKurs = draft.method === "flat_kurs"
+  /** Either Rate method: same formula, same stored columns, different rate source. */
+  const draftKurs = isKursMethod(draft.method)
   const draftFlatFee = draft.method === "flat_fee"
   // Same country-driven split Tier Fee has: with one, cost is landed cost and derived.
   const draftFlatFeeValas = draftFlatFee && draft.countryId != null
@@ -2198,29 +2274,36 @@ function EditProductModal({
     flatFeeMinSetting,
   )
 
-  // The rate this valas would be charged, re-resolved as it is edited. Falls back
-  // to the row's own snapshot when there is no country to resolve against, so an
-  // edit never silently zeroes the rate the price was built from.
-  const draftChargedKurs = draftCountry
-    ? resolveTieredKurs(
-        tiersForCountry(kursTiers, draftCountry.id),
-        Number(draft.valas) || 0,
-        draftCountry.kurs,
-      )
-    : (row.tieredKurs ?? 0)
-
-  // A Tier Kurs row was costed at the markup rate that was live when it was added, and
-  // that figure lives in products.kurs. Keep it: rewriting it from countries.kurs on an
-  // unrelated edit would re-cost the row at a rate it was never priced with, and this
-  // modal has no live rate of its own to offer instead.
+  // A Rate row was costed at the markup rate that was live when it was added, and that
+  // figure lives in products.kurs. Keep it: rewriting it from countries.kurs on an unrelated
+  // edit would re-cost the row at a rate it was never priced with, and this modal has no
+  // live rate of its own to offer instead.
   //
   // The one exception is a country change, where the old snapshot is a rate for the wrong
   // currency entirely; the new country's stored rate is then the best available.
   //
-  // Declared above editCalc, which reads it during render: below it, the Tier Kurs branch
-  // hits the temporal dead zone and the modal throws on open.
+  // Declared above BOTH draftChargedKurs and editCalc, which read it during render. Below
+  // either one it is a temporal dead zone — see 9eda039, where exactly that threw
+  // "Cannot access 'Q' before initialization" on every Tier Kurs edit.
   const tierKursCostRate =
     draft.countryId === row.countryId ? row.kurs : (draftCountry?.kurs ?? row.kurs)
+
+  // The rate this valas would be charged, re-resolved as it is edited. Falls back
+  // to the row's own snapshot when there is no country to resolve against, so an
+  // edit never silently zeroes the rate the price was built from.
+  //
+  // The flat fallback is tierKursCostRate — the rate this row books as COST, and the value
+  // handleSave is about to send as body.kurs. The server resolves against that same figure,
+  // so an unconfigured country previews a zero spread here and stores one there.
+  const draftChargedKurs = !draftCountry
+    ? (row.tieredKurs ?? 0)
+    : draftFlatKurs
+      ? resolveFlatKurs(draftCountry.flatKurs, tierKursCostRate)
+      : resolveTieredKurs(
+          tiersForCountry(kursTiers, draftCountry.id),
+          Number(draft.valas) || 0,
+          draftCountry.kurs,
+        )
 
   // Live price + per-unit COGS + profit. Profit (overseas) = price − COGS − fees,
   // matching the Add form's preview.
@@ -2238,7 +2321,9 @@ function EditProductModal({
       const profit = abroadProfit({ price, cogs, operationalFee: Number(draft.opFee) || 0, packingFee: Number(draft.packFee) || 0 })
       return { price, cogs: Math.round(cogs), profit }
     }
-    if (draftTierKurs) {
+    // Both Rate methods: identical formula, and draftChargedKurs above already knows
+    // which rate it resolved.
+    if (draftKurs) {
       const { cogs, price } = calcKursPrice({
         gram: Number(draft.gram) || 0,
         cargoPerKg: draftCountry?.cargoPerKg ?? row.cargoPerKg,
@@ -2280,7 +2365,7 @@ function EditProductModal({
       return { price: calcRupiahFeePrice(base, flatFee), cogs: base, profit: flatFee }
     }
     return { price: calcRupiahFeePrice(Number(draft.cost) || 0, Number(draft.profitFixed) || 0), cogs: null, profit: null }
-  }, [draft, draftAbroad, draftTierKurs, draftFlatFee, draftFlatFeeValas, draftTierFeeValas, draftValasFee,
+  }, [draft, draftAbroad, draftKurs, draftFlatFee, draftFlatFeeValas, draftTierFeeValas, draftValasFee,
       draftChargedKurs, draftCountry, row.kurs, row.cargoPerKg, productDefaults, flatFee, tierKursCostRate])
 
   async function handleSave() {
@@ -2297,7 +2382,7 @@ function EditProductModal({
         // Keyed on the country's presence, not on the method: that is what decides
         // whether the row is priced in foreign currency at all, for every method.
         valas: draft.countryId != null ? Number(draft.valas) || 0 : 0,
-        kurs: draftTierKurs
+        kurs: draftKurs
           ? tierKursCostRate
           : draft.countryId != null ? (draftCountry?.kurs ?? row.kurs) : 0,
         // Freight is booked by the three methods whose cost is landed cost — overseas,
@@ -2310,7 +2395,7 @@ function EditProductModal({
         operationalFee: draftAbroad ? Number(draft.opFee) || 0 : 5000,
         flatFeeMode: draft.flatFeeMode,
         // Tier Kurs recovers a packing charge in its price too, so it stores its own.
-        packingFee: draftAbroad || draftTierKurs ? Number(draft.packFee) || 0 : 5000,
+        packingFee: draftAbroad || draftKurs ? Number(draft.packFee) || 0 : 5000,
         // Not sent for valas-mode Flat Fee: the server derives that cost from valas, the
         // rate and the freight, and ignores anything here.
         cost: draftTierFeeRupiah || draftFlatFeeRupiah ? Number(draft.cost) || 0 : 0,
@@ -2340,7 +2425,7 @@ function EditProductModal({
         kurs: Number(body.kurs) || 0,
         // Mirrors the server's rule: null for every method but tier_kurs, so the
         // Tier Rate cell doesn't show a number the row doesn't have.
-        tieredKurs: draftTierKurs ? draftChargedKurs : null,
+        tieredKurs: draftKurs ? draftChargedKurs : null,
         cargoPerKg: Number(body.cargoPerKg) || 0,
         profitPct: Number(body.profitPct) || 0,
         operationalFee: Number(body.operationalFee) || 0,
@@ -2433,7 +2518,11 @@ function EditProductModal({
           <Field label="Pricing">
             <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs self-start">
               {METHOD_TABS.map((m) => {
-                const active = m === "tier_fee" ? isFeeMethod(draft.method) : draft.method === m
+                const active = m === "tier_fee"
+                  ? isFeeMethod(draft.method)
+                  : m === "tier_kurs"
+                    ? isKursMethod(draft.method)
+                    : draft.method === m
                 return (
                   <button
                     key={m}
@@ -2482,10 +2571,44 @@ function EditProductModal({
               </div>
             </Field>
           )}
+
+          {/* Where the charged rate comes from. Neither side clears the country, unlike the
+              Fee toggle above — both Rate methods need one, because a rate is meaningless
+              without a currency to be a rate for. */}
+          {isKursMethod(draft.method) && (
+            <Field label="Rate">
+              <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs self-start">
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => setDraft((d) => ({ ...d, method: "tier_kurs" }))}
+                  className={`px-3 py-1.5 transition-colors ${draft.method === "tier_kurs" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
+                >
+                  Tier
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => setDraft((d) => ({ ...d, method: "flat_kurs" }))}
+                  className={`px-3 py-1.5 transition-colors ${draft.method === "flat_kurs" ? "bg-brand text-white font-medium" : "bg-white text-gray-600 hover:bg-cream"}`}
+                >
+                  Flat
+                </button>
+              </div>
+            </Field>
+          )}
         </div>
 
-        {/* Shown for every method: for overseas and Tier Kurs it is required, and for the
-            two fee methods its presence is what selects a foreign-currency base. */}
+        {/* Shown for every method: for Profit Margin and the two Rate methods it is
+            required, and for the two fee methods its presence is what selects a
+            foreign-currency base.
+
+            `clearable` is GATED, and must stay gated. Clearing the country on a Rate row
+            sent countryId null and — because valas is gated on the country — valas 0, so
+            the server resolved no rate and stored ceil(0 × kurs + packFee): Rp 5.000,
+            non-zero, straight past the Sheets-import guard. A real price replaced by 5000
+            by clearing one field. The server rejects it now too; this stops the owner
+            reaching the rejection. */}
         {true ? (
           <div className="grid grid-cols-2 gap-3">
             <Field label="Country">
@@ -2493,10 +2616,10 @@ function EditProductModal({
                 value={draft.countryId != null ? String(draft.countryId) : ""}
                 onChange={(v) => setDraft((d) => ({ ...d, countryId: v ? Number(v) : null }))}
                 options={countries.map((c) => ({ value: String(c.id), label: `${c.name} (${c.currency})` }))}
-                placeholder="Domestic"
+                placeholder={methodNeedsCountry(draft.method) ? "Select country…" : "Domestic"}
                 disabled={saving}
                 searchable={false}
-                clearable
+                clearable={!methodNeedsCountry(draft.method)}
                 alwaysShowAll
               />
             </Field>
@@ -2505,8 +2628,9 @@ function EditProductModal({
                   the popover only appears for Tier Kurs. */}
               <div className="flex items-center gap-2">
                 <input value={draft.valas} onChange={(e) => setDraft((d) => ({ ...d, valas: e.target.value }))} type="number" step="any" min="0" disabled={saving} className={`${formInputCls} flex-1 min-w-0`} />
-                {draftTierKurs && (
+                {draftKurs && (
                   <KursTierPopover
+                    mode={draft.method === "flat_kurs" ? "flat" : "tier"}
                     country={draftCountry}
                     valas={Number(draft.valas) || 0}
                     gram={Number(draft.gram) || 0}
