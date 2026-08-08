@@ -128,9 +128,11 @@ export default function SettingsClient() {
       <div className={tab === "business" ? "" : "hidden"}>
         <BusinessProfileSection />
       </div>
-      {/* All three cards are pricing config, so they share one tab. Product
-          defaults first — it owns the rounding step the Tier Kurs readout reports —
-          then one card per bracketed method, in PRICING_METHODS order. */}
+      {/* Every card here is pricing config, so they share one tab. Product defaults first —
+          it owns the rounding step both Rate methods round to — then the per-method cards in
+          PRICING_METHODS order. ProductDefaultsSection renders TWO of them: it also owns the
+          Markup Flat card, because those three figures live in the same record and the same
+          Save. */}
       <div className={`flex flex-col gap-6 ${tab === "product-defaults" ? "" : "hidden"}`}>
         <ProductDefaultsSection />
         <TierFeeBracketsSection />
@@ -379,12 +381,28 @@ function ProductDefaultsSection() {
     setDefaults((d) => (d ? { ...d, defaultCountryId: value === "" ? null : Number(value) } : d))
   }
 
+  const saveButton = (
+    <button
+      type="button"
+      onClick={handleSave}
+      disabled={saving || !defaults}
+      className="text-xs font-medium px-3 py-1.5 rounded-lg bg-brand text-white hover:bg-brand-light transition-colors disabled:opacity-50"
+    >
+      {saving ? "Saving…" : "Save"}
+    </button>
+  )
+
   return (
+    <>
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h2 className="text-sm font-semibold text-foreground">Product defaults</h2>
         <div className="flex items-center gap-3">
           {saved && <span className="text-xs text-green-600">Saved</span>}
+          {/* Reset lives on this card only: it restores DEFAULT_PRODUCT_DEFAULTS, which is
+              the whole record — including the three fields shown in the Markup Flat card
+              below. A second copy there would read as "reset the flat fee settings" and
+              quietly clear the rest. */}
           <button
             type="button"
             onClick={handleReset}
@@ -397,14 +415,7 @@ function ProductDefaultsSection() {
               <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
             </svg>
           </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving || !defaults}
-            className="text-xs font-medium px-3 py-1.5 rounded-lg bg-brand text-white hover:bg-brand-light transition-colors disabled:opacity-50"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
+          {saveButton}
         </div>
       </div>
 
@@ -468,6 +479,53 @@ function ProductDefaultsSection() {
             </span>
           </label>
           <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Default country</span>
+            <select
+              value={defaults.defaultCountryId != null ? String(defaults.defaultCountryId) : ""}
+              onChange={(e) => setDefaultCountry(e.target.value)}
+              className={fieldInputCls}
+            >
+              {/* Empty value = NULL = no country, which the Add Product form shows as
+                  "IDR (Rupiah)". A real option, not a placeholder. */}
+              <option value="">IDR (Rupiah)</option>
+              {countries.map((c) => (
+                <option key={c.id} value={c.id}>{c.name} ({c.currency})</option>
+              ))}
+            </select>
+            <span className="text-[10px] text-gray-400">
+              Which country the Add Product form starts on. For Markup and Flat Fee this also
+              decides whether that form opens with a typed base cost (IDR) or one derived from
+              valas.
+            </span>
+          </label>
+        </div>
+      )}
+    </div>
+
+    {/* The three figures behind Markup's Flat toggle. Their own card because they are not
+        form pre-fills like the rest of Product defaults: the SERVER re-reads all three
+        inside the write transaction, so they are the authority over what a Flat Fee product
+        is priced at — the same distinction Tier Kurs rounding carries, one card up.
+
+        Same `defaults` state and the same PATCH, so this Save writes the whole record and
+        the two cards can never disagree. No reset here — see the comment on the one above. */}
+    <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h2 className="text-sm font-semibold text-foreground">Markup Flat</h2>
+        <div className="flex items-center gap-3">
+          {saved && <span className="text-xs text-green-600">Saved</span>}
+          {saveButton}
+        </div>
+      </div>
+
+      <p className="text-[10px] text-gray-400">
+        What a Flat Fee product earns — the Flat side of Markup&apos;s Tier | Flat toggle.
+        Read when a product is saved, so every Flat Fee product uses the same figures.
+      </p>
+
+      {defaults && (
+        <div className="grid md:grid-cols-3 gap-3">
+          <label className="flex flex-col gap-1">
             <span className="text-xs text-gray-500">Flat Fee</span>
             <input
               type="number"
@@ -511,29 +569,10 @@ function ProductDefaultsSection() {
               the work costs. 0 = no floor. Percent mode only.
             </span>
           </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Default country</span>
-            <select
-              value={defaults.defaultCountryId != null ? String(defaults.defaultCountryId) : ""}
-              onChange={(e) => setDefaultCountry(e.target.value)}
-              className={fieldInputCls}
-            >
-              {/* Empty value = NULL = no country, which the Add Product form shows as
-                  "IDR (Rupiah)". A real option, not a placeholder. */}
-              <option value="">IDR (Rupiah)</option>
-              {countries.map((c) => (
-                <option key={c.id} value={c.id}>{c.name} ({c.currency})</option>
-              ))}
-            </select>
-            <span className="text-[10px] text-gray-400">
-              Which country the Add Product form starts on. For Markup and Flat Fee this also
-              decides whether that form opens with a typed base cost (IDR) or one derived from
-              valas.
-            </span>
-          </label>
         </div>
       )}
     </div>
+    </>
   )
 }
 
