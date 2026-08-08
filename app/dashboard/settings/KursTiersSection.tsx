@@ -483,28 +483,39 @@ function CountryBrackets({
                 ? (kurs / country.kurs - 1) * 100
                 : null
             return (
-              <div key={i} className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-xs text-gray-400 shrink-0 w-20">from valas</span>
+              // No flex-wrap: a bracket is one row at every width. On a phone the two word
+              // labels move into the inputs as placeholders and the inputs share whatever is
+              // left, because "from valas 5000 charge 226" wrapped into a ragged three-line
+              // block that read as three separate controls rather than one bracket.
+              <div key={i} className="flex items-center gap-1.5">
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0 w-20">from valas</span>
                 <input
                   value={band.minValas}
                   onChange={(e) => setBand(i, { minValas: e.target.value })}
                   type="number" min="0" step="any"
-                  className={`${inputCls} w-32 shrink-0`}
+                  placeholder="from valas"
+                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-32 md:shrink-0`}
                 />
-                <span className="text-xs text-gray-400 shrink-0">charge</span>
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0">charge</span>
                 <input
                   value={band.kurs}
                   onChange={(e) => setBand(i, { kurs: e.target.value })}
                   type="number" min="0" step="any"
-                  className={`${inputCls} w-32 shrink-0`}
+                  placeholder="charge"
+                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-32 md:shrink-0`}
                 />
-                {markup != null && (
-                  <span
-                    className={`text-xs shrink-0 tabular-nums ${markup >= 0 ? "text-green-700" : "text-red-600"}`}
-                  >
-                    {markup >= 0 ? "+" : ""}{markup.toFixed(1)}%
-                  </span>
-                )}
+                {/* Always rendered, at a fixed width, even when there is no markup to show.
+                    The inputs beside it are flex-1 on mobile, so they absorb whatever this
+                    leaves — a variable-width or absent percentage sized every row's boxes
+                    differently and the column of brackets came out ragged. w-14 fits
+                    "+100.0%", the widest this can be for a sane rate. */}
+                <span
+                  className={`w-14 shrink-0 text-right text-xs tabular-nums ${
+                    markup == null ? "text-transparent" : markup >= 0 ? "text-green-700" : "text-red-600"
+                  }`}
+                >
+                  {markup != null && `${markup >= 0 ? "+" : ""}${markup.toFixed(1)}%`}
+                </span>
                 <button
                   type="button"
                   onClick={() => {
