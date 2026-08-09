@@ -17,7 +17,7 @@ import SearchableSelect from "@/components/SearchableSelect"
 
 const PAGE_SIZE = 25
 
-const REASON_LABEL: Record<ExcessReason, string> = {
+export const REASON_LABEL: Record<ExcessReason, string> = {
   overbuy: "Overbuy",
   overship: "Overship",
   wrong_product: "Wrong",
@@ -27,7 +27,7 @@ const REASON_LABEL: Record<ExcessReason, string> = {
   manual: "Manual entry",
 }
 
-const REASON_CLASS: Record<ExcessReason, string> = {
+export const REASON_CLASS: Record<ExcessReason, string> = {
   overbuy: "bg-gray-100 text-gray-700 border-gray-200",
   overship: "bg-blue-50 text-blue-700 border-blue-200",
   wrong_product: "bg-yellow-50 text-yellow-700 border-yellow-200",
