@@ -316,7 +316,7 @@ export default function AdjustmentsClient() {
         type="button"
         onClick={() => { setMobileAddOpen(true); setEditingRow(null) }}
         aria-label="Add adjustment"
-        className="md:hidden fixed right-4 bottom-20 z-30 w-14 h-14 rounded-full bg-brand text-white text-3xl leading-none shadow-lg flex items-center justify-center active:bg-brand/90"
+        className="md:hidden fixed right-4 bottom-[calc(5rem+env(safe-area-inset-bottom))] z-30 w-14 h-14 rounded-full bg-brand text-white text-3xl leading-none shadow-lg flex items-center justify-center active:bg-brand/90"
       >
         +
       </button>
