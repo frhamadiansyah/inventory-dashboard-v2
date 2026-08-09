@@ -3,7 +3,7 @@
 import { displayIg } from "@/lib/format"
 import TableSkeleton from "@/components/TableSkeleton"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { PaidStatus, DispatchListItem, DispatchListOrder } from "@/lib/db"
+import type { PaidStatus, DispatchListItem, DispatchListOrder, ExcessTransitItem } from "@/lib/db"
 import { useSheetOptions } from "@/hooks/useSheetOptions"
 import { allocateFifo } from "@/lib/fifo-fill"
 import { fetchJson } from "@/lib/api-fetch"
@@ -11,6 +11,7 @@ import DispatchModal from "./DispatchModal"
 import EventSelect from "@/components/EventSelect"
 import SearchInput from "@/components/SearchInput"
 import SelectionActionBar from "@/components/SelectionActionBar"
+import OverbuyTransitList from "@/components/OverbuyTransitList"
 
 const INPUT_CLASS =
   "border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
@@ -248,6 +249,7 @@ function CustomerBadge({ orders }: { orders: CustomerBadgeOrder[] }) {
 export default function DispatchListClient() {
   const options = useSheetOptions()
   const [items, setItems] = useState<DispatchListItem[]>([])
+  const [excessPending, setExcessPending] = useState<ExcessTransitItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [selectedEvent, setSelectedEvent] = useState("")
@@ -267,10 +269,11 @@ export default function DispatchListClient() {
     const url = event
       ? `/api/sheets/dispatch?event=${encodeURIComponent(event)}`
       : "/api/sheets/dispatch"
-    fetchJson<{ items: DispatchListItem[] }>(url)
+    fetchJson<{ items: DispatchListItem[]; excessPending?: ExcessTransitItem[] }>(url)
       .then((data) => {
         const items = data.items ?? []
         setItems(items)
+        setExcessPending(data.excessPending ?? [])
         // Stores start collapsed (event headers + store headers visible, items
         // hidden). Only on an explicit load — a silent post-mutation refresh
         // leaves whatever the user has expanded alone.
@@ -614,6 +617,12 @@ export default function DispatchListClient() {
           )
         })}
       </div>
+
+      <OverbuyTransitList
+        items={excessPending}
+        stage="dispatch"
+        onMarked={() => fetchItems(selectedEvent || undefined, true)}
+      />
 
       {dispatchingItem && (
         <DispatchItemModal
