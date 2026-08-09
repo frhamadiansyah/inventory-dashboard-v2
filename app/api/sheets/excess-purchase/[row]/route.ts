@@ -109,6 +109,11 @@ export async function POST(req: NextRequest, { params }: Params) {
     const eligibleById = new Map((await getEligibleOrders(excessRow)).map((r) => [r.rowNumber, r]))
 
     let remaining = excessRow.unitBuy
+    // The excess row's own dispatch/arrive pools cap what a target order can
+    // inherit — in-transit excess (unitDispatch/unitArrive below unitBuy) must
+    // not make the target look arrived just because it was reassigned on paper.
+    let remainingDispatch = excessRow.unitDispatch ?? 0
+    let remainingArrive = excessRow.unitArrive ?? 0
     const updates: (UpdatedRow & { receipt: string; unitArrive: number; unitDispatch: number; dispatchReceipt: string })[] = []
 
     for (const { rowNumber: targetRow, allocate: requestedAllocate } of requested) {
@@ -123,17 +128,18 @@ export async function POST(req: NextRequest, { params }: Params) {
           ? `${existingReceipt}, ${receipt}`
           : receipt
         : existingReceipt
+      const dispatchGive = Math.min(allocate, remainingDispatch)
+      const arriveGive = Math.min(allocate, remainingArrive)
+      remainingDispatch -= dispatchGive
+      remainingArrive -= arriveGive
       updates.push({
         rowNumber: r.rowNumber,
         event: r.event,
         customer: r.customer,
         oldUnitBuy: current,
         unitBuy: current + allocate,
-        // Applied excess is stock already in hand, so it counts as arrived AND
-        // dispatched too — bump both by the same amount so it drops off the
-        // dispatch list and the receiving list, not just the shopping list.
-        unitArrive: (r.unitArrive ?? 0) + allocate,
-        unitDispatch: (r.unitDispatch ?? 0) + allocate,
+        unitArrive: (r.unitArrive ?? 0) + arriveGive,
+        unitDispatch: (r.unitDispatch ?? 0) + dispatchGive,
         dispatchReceipt: r.dispatchReceipt ?? "",
         receipt: combinedReceipt,
       })
