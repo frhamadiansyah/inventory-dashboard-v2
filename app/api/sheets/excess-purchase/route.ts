@@ -45,13 +45,11 @@ export async function POST(req: NextRequest) {
     const workingUnitBuy = new Map<number, number>()
     for (const r of formRows) workingUnitBuy.set(r.rowNumber, r.unitBuy ?? 0)
 
-    // Each order's original unit_arrive, to bump alongside unit_buy on apply
-    // (applied excess is already in hand, so it counts as arrived).
+    // Each order's original unit_arrive/unit_dispatch, so the final write can
+    // add this batch's delta on top rather than overwrite.
     const origUnitArrive = new Map<number, number>()
     for (const r of formRows) origUnitArrive.set(r.rowNumber, r.unitArrive ?? 0)
 
-    // Each order's original unit_dispatch, to bump alongside unit_buy on apply
-    // (applied excess is already in hand, so it counts as dispatched too).
     const origUnitDispatch = new Map<number, number>()
     for (const r of formRows) origUnitDispatch.set(r.rowNumber, r.unitDispatch ?? 0)
 
@@ -61,8 +59,20 @@ export async function POST(req: NextRequest) {
     const origDispatchReceipt = new Map<number, string>()
     for (const r of formRows) origDispatchReceipt.set(r.rowNumber, r.dispatchReceipt ?? "")
 
-    // Accumulate Duplicate_Form updates (keyed by rowNumber to merge multi-excess fills)
-    const formUpdates = new Map<number, { customer: string; oldUnitBuy: number; unitBuy: number; receipt: string }>()
+    // Accumulate Duplicate_Form updates (keyed by rowNumber to merge multi-excess
+    // fills). arriveDelta/dispatchDelta accumulate separately from unitBuy's
+    // delta because — unlike before this table tracked transit state — an
+    // excess row's own unitDispatch/unitArrive can be below its unitBuy, so the
+    // target order must not inherit more arrived/dispatched units than the
+    // source excess row actually has.
+    const formUpdates = new Map<number, {
+      customer: string
+      oldUnitBuy: number
+      unitBuy: number
+      receipt: string
+      arriveDelta: number
+      dispatchDelta: number
+    }>()
 
     const results: ItemResult[] = []
     const excessToDelete: number[] = []
@@ -82,6 +92,8 @@ export async function POST(req: NextRequest) {
         )
 
       let remaining = excessRow.unitBuy
+      let remainingDispatch = excessRow.unitDispatch ?? 0
+      let remainingArrive = excessRow.unitArrive ?? 0
       const filled: UpdatedRow[] = []
 
       for (const r of eligible) {
@@ -89,11 +101,14 @@ export async function POST(req: NextRequest) {
         const current = workingUnitBuy.get(r.rowNumber) ?? 0
         const allocate = Math.min(r.unit - current, remaining)
         const newUnitBuy = current + allocate
+        const dispatchGive = Math.min(allocate, remainingDispatch)
+        const arriveGive = Math.min(allocate, remainingArrive)
+        remainingDispatch -= dispatchGive
+        remainingArrive -= arriveGive
 
         // Accumulate receipt — chain if this row is touched by multiple excess rows
-        const existingReceipt = formUpdates.has(r.rowNumber)
-          ? formUpdates.get(r.rowNumber)!.receipt
-          : (r.receipt ?? "")
+        const prevUpdate = formUpdates.get(r.rowNumber)
+        const existingReceipt = prevUpdate ? prevUpdate.receipt : (r.receipt ?? "")
         const combinedReceipt = receipt
           ? existingReceipt ? `${existingReceipt}, ${receipt}` : receipt
           : existingReceipt
@@ -101,9 +116,11 @@ export async function POST(req: NextRequest) {
         formUpdates.set(r.rowNumber, {
           customer: r.customer,
           // preserve the original unitBuy from before this whole batch
-          oldUnitBuy: formUpdates.get(r.rowNumber)?.oldUnitBuy ?? current,
+          oldUnitBuy: prevUpdate?.oldUnitBuy ?? current,
           unitBuy: newUnitBuy,
           receipt: combinedReceipt,
+          arriveDelta: (prevUpdate?.arriveDelta ?? 0) + arriveGive,
+          dispatchDelta: (prevUpdate?.dispatchDelta ?? 0) + dispatchGive,
         })
         workingUnitBuy.set(r.rowNumber, newUnitBuy)
         filled.push({ rowNumber: r.rowNumber, event: r.event, customer: r.customer, oldUnitBuy: current, unitBuy: newUnitBuy })
@@ -120,10 +137,10 @@ export async function POST(req: NextRequest) {
     }
 
     // 1. Write all Duplicate_Form updates in one batch. unit_arrive and
-    //    unit_dispatch are both bumped by the same amount applied
-    //    (unitBuy - oldUnitBuy) so applied excess — stock already in hand —
-    //    drops off the dispatch and receiving lists too, not just the
-    //    shopping list.
+    //    unit_dispatch are bumped by however much of the *source* excess
+    //    row(s) were actually arrived/dispatched (arriveDelta/dispatchDelta),
+    //    not blindly by the full amount applied — in-transit excess must not
+    //    make the target order look arrived just because it was reassigned.
     await withActor(session.user.email, async (tx) => {
       const entries = Array.from(formUpdates.entries())
       await bulkUpdatePurchase(
@@ -137,14 +154,14 @@ export async function POST(req: NextRequest) {
       await bulkUpdateArrive(
         entries.map(([rowNumber, d]) => ({
           rowNumber,
-          unitArrive: (origUnitArrive.get(rowNumber) ?? 0) + (d.unitBuy - d.oldUnitBuy),
+          unitArrive: (origUnitArrive.get(rowNumber) ?? 0) + d.arriveDelta,
         })),
         tx,
       )
       await bulkUpdateDispatch(
         entries.map(([rowNumber, d]) => ({
           rowNumber,
-          unitDispatch: (origUnitDispatch.get(rowNumber) ?? 0) + (d.unitBuy - d.oldUnitBuy),
+          unitDispatch: (origUnitDispatch.get(rowNumber) ?? 0) + d.dispatchDelta,
           dispatchReceipt: origDispatchReceipt.get(rowNumber) ?? "",
         })),
         tx,
