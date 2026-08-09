@@ -1057,6 +1057,13 @@ export async function appendExcessPurchase(
     receipt: string
     reason?: ExcessReason
     expectedItem?: string
+    // Most callers (wrong-product, broken, overship, manual "Add Inventory")
+    // are stock already physically in hand at insert time, so these default to
+    // fully-arrived (unitBuy) below. The purchasing-overflow caller — bought
+    // more than any pending order needed, nothing dispatched yet — passes
+    // null explicitly to opt out of that default.
+    unitDispatch?: number | null
+    unitArrive?: number | null
   }[],
   db: DBExecutor = sql,
 ): Promise<void> {
@@ -1072,13 +1079,8 @@ export async function appendExcessPurchase(
         receipt: r.receipt,
         reason: r.reason ?? "overbuy",
         expected_item: r.expectedItem ?? null,
-        // Every current caller (wrong-product, broken, overship, manual "Add
-        // Inventory") is stock already physically in hand at insert time — the
-        // in-transit case goes through returnOrderUnitsToExcess instead, which
-        // sets these explicitly. Defaulting to fully-arrived here matches this
-        // table's pre-existing "ready stock" behavior for these paths exactly.
-        unit_dispatch: r.unitBuy,
-        unit_arrive: r.unitBuy,
+        unit_dispatch: r.unitDispatch !== undefined ? r.unitDispatch : r.unitBuy,
+        unit_arrive: r.unitArrive !== undefined ? r.unitArrive : r.unitBuy,
       }))
     )}
   `
