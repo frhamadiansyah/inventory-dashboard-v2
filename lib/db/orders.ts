@@ -1,7 +1,7 @@
 import sql from "../db-pool"
 import { tsToString, normalizeCustomer } from "./helpers"
 import type { DBExecutor } from "./actor"
-import type { SheetOptions, ItemOption, OrderRow, FormRow, ExcessRow, ExcessReason, PurchaseUpdate, ArriveUpdate, DispatchUpdate } from "./types"
+import type { SheetOptions, ItemOption, OrderRow, FormRow, ExcessRow, ExcessReason, PurchaseUpdate, ArriveUpdate, DispatchUpdate, ExcessDispatchUpdate, ExcessArriveUpdate } from "./types"
 
 // ─── Options ────────────────────────────────────────────────────────────────
 
@@ -620,6 +620,36 @@ export async function bulkUpdateDispatch(updates: DispatchUpdate[], db: DBExecut
     FROM unnest(${ids}::int[], ${dispatches}::int[], ${receipts}::text[])
       AS data(id, unit_dispatch, dispatch_receipt)
     WHERE orders.id = data.id
+  `
+}
+
+export async function bulkUpdateExcessDispatch(updates: ExcessDispatchUpdate[], db: DBExecutor = sql): Promise<void> {
+  if (updates.length === 0) return
+  const ids = updates.map((u) => u.rowNumber)
+  const dispatches = updates.map((u) => u.unitDispatch)
+  const receipts = updates.map((u) => u.dispatchReceipt)
+  await db`
+    UPDATE excess_purchase SET
+      unit_dispatch = data.unit_dispatch,
+      dispatch_receipt = data.dispatch_receipt,
+      updated_at = NOW()
+    FROM unnest(${ids}::int[], ${dispatches}::int[], ${receipts}::text[])
+      AS data(id, unit_dispatch, dispatch_receipt)
+    WHERE excess_purchase.id = data.id
+  `
+}
+
+export async function bulkUpdateExcessArrive(updates: ExcessArriveUpdate[], db: DBExecutor = sql): Promise<void> {
+  if (updates.length === 0) return
+  const ids = updates.map((u) => u.rowNumber)
+  const arrives = updates.map((u) => u.unitArrive)
+  await db`
+    UPDATE excess_purchase SET
+      unit_arrive = data.unit_arrive,
+      updated_at = NOW()
+    FROM unnest(${ids}::int[], ${arrives}::int[])
+      AS data(id, unit_arrive)
+    WHERE excess_purchase.id = data.id
   `
 }
 
