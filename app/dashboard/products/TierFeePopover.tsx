@@ -4,14 +4,14 @@
 // charge — so the fee isn't a number with no explanation.
 //
 // Serves both scopes, which since migrations 056/057 are one concept in ONE unit: both sets
-// are rupiah, and both are matched against a rupiah base cost. What differs is only where
-// that base cost comes from and what happens after the fee is added:
+// are rupiah, and both are matched against a rupiah base cost. Both are overridable too —
+// the field is always a pre-fill, never server-authoritative — so `entered` is passed and
+// the panel calls out an override for either scope. What differs is only where the base
+// cost comes from and what happens after the fee is added:
 //
-//   rupiah scope — base is the typed cost, `entered` is the typed fee, and the panel calls
-//                  out an override, since the field is only ever pre-filled.
+//   rupiah scope — base is the typed cost.
 //   valas scope  — base is the DERIVED cost (valas × rate + freight) and `rounding` is
 //                  supplied, so the panel shows the total being rounded up to the price.
-//                  Nothing is overridable there: the server resolves it.
 //
 // Panel chrome and positioning come from InfoPopover.
 
@@ -37,7 +37,7 @@ export default function TierFeePopover({
   brackets: TierFeeBracketRow[] | null
   /** "Rp", or the country's currency code. */
   unit: string
-  /** Rupiah mode only: what is currently in the Fee field, so an override shows. */
+  /** What is currently in the Fee field, so an override shows — either scope. */
   entered?: number
   /** Valas scope only: the step the fee-plus-cost total is rounded up to. Absent means the
    *  total is exact, which is what the rupiah scope does. */
@@ -143,7 +143,7 @@ export default function TierFeePopover({
         {rounding ? (
           <>
             Brackets are edited under Settings → Pricing, and the rounding step at the top
-            of the Rate card there. Both are read when the product is saved.
+            of the Rate card there. Changing them never reprices an existing product.
           </>
         ) : (
           <>

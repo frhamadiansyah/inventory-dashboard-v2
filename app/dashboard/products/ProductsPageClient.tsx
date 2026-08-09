@@ -15,12 +15,13 @@ import SearchInput from "@/components/SearchInput"
 import {
   calcAbroadPrice, calcRupiahFeePrice, abroadProfit, calcKursPrice, kursProfit,
   calcFlatFeeValasPrice, flatFeeAmount, flatFeeFloorApplies, landedCost, type FlatFeeMode,
-  calcTierFeeValasPrice,
+  calcTierFeeValasPrice, ceilTo,
   PRICING_METHOD_LABEL, isKursMethod, type PricingMethod,
 } from "@/lib/pricing"
 import { resolveTieredKurs, resolveFlatKurs, tiersForCountry } from "@/lib/kurs-tiers"
 import {
   resolveTierFee, resolveRupiahTierFee, bracketsForScope, DEFAULT_RUPIAH_TIER_FEE_BRACKETS,
+  RUPIAH_TIER_FEE_ROUND_TO,
 } from "@/lib/tier-fee"
 import { useKursTiers } from "@/hooks/useKursTiers"
 import { useTierFeeBrackets } from "@/hooks/useTierFeeBrackets"
@@ -1065,6 +1066,16 @@ function AddProductForm({
     : 0
   const valasFee = tierFeeValas ? resolveRupiahTierFee(scopedFeeBrackets ?? [], valasBase) : 0
 
+  // Pre-fills Fee from the matched bracket, same as rupiah mode's cost-onChange seed —
+  // there is no single input to hang that off here (the base is derived from three
+  // fields), so it runs as an effect instead. Skips once the owner has typed their own
+  // value, same guard rupiah mode uses.
+  useEffect(() => {
+    if (!tierFeeValas || profitManual) return
+    setProfitFixed(String(Math.round(valasFee)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tierFeeValas, valasFee, profitManual])
+
   // Both Rate methods book cost at the country's MARKUP RATE — the live mid-market rate plus
   // product_defaults.markup_pct — not at the stored countries.kurs. That stored figure is
   // hand-entered from this same calculation (see the Live rate / Markup rate boxes on the
@@ -1157,12 +1168,14 @@ function AddProductForm({
       })
     }
     if (tierFeeValas) {
+      // The editable field, not the raw bracket resolution — matches what actually
+      // gets sent to the server (see the tierFeeValas branch of the submit body).
       return calcTierFeeValasPrice({
         valas: Number(valas) || 0,
         kurs: selectedCountry?.kurs ?? 0,
         gram: Number(gram) || 0,
         cargoPerKg: selectedCountry?.cargoPerKg ?? 0,
-        fee: valasFee,
+        fee: Number(profitFixed) || 0,
         roundTo: productDefaults?.tierKursRoundTo ?? DEFAULT_PRODUCT_DEFAULTS.tierKursRoundTo,
       })
     }
@@ -1183,9 +1196,10 @@ function AddProductForm({
       return { cogs: base, price: calcRupiahFeePrice(base, flatFee) }
     }
     // Rupiah-mode Tier Fee. cogs is the typed base cost — it used to return 0 here, which
-    // was harmless while nothing read it, but the readout below does now.
+    // was harmless while nothing read it, but the readout below does now. Rounded, unlike
+    // Flat Fee just above (same calcRupiahFeePrice arithmetic) — see RUPIAH_TIER_FEE_ROUND_TO.
     const base = Number(cost) || 0
-    return { cogs: base, price: calcRupiahFeePrice(base, Number(profitFixed) || 0) }
+    return { cogs: base, price: ceilTo(calcRupiahFeePrice(base, Number(profitFixed) || 0), RUPIAH_TIER_FEE_ROUND_TO) }
   }, [type, valas, gram, profitPct, opFee, packFee, cost, profitFixed, selectedCountry,
       chargedKurs, costRate, productDefaults, flatFee, tierFeeValas, valasFee])
 
@@ -1231,14 +1245,17 @@ function AddProductForm({
         // 5000 default — otherwise the price is not reproducible from the row.
         body.packingFee = Number(packFee) || 0
       } else if (tierFeeValas) {
-        // No fee and no meaningful price: the server resolves the bracket fee
-        // from countryId and valas, and ignores anything sent for either.
+        // No meaningful price: the server derives cost from countryId/valas and
+        // recomputes price = cost + fee. The fee itself DOES come from here — same as
+        // rupiah mode, the field is bracket-prefilled but editable — falling back to
+        // the bracket resolution server-side only if this is somehow omitted.
         body.countryId = countryId
         body.valas = Number(valas) || 0
         body.kurs = selectedCountry?.kurs ?? 0
         // Freight is part of this method's cost now, so the rate it was costed at has to
         // live on the row — cost itself is derived, not stored, for these products.
         body.cargoPerKg = selectedCountry?.cargoPerKg ?? 0
+        body.profitFixed = Number(profitFixed) || 0
       } else if (flatFeeValas) {
         // No profitFixed, no price and no cost: the server reads the flat fee from
         // product_defaults and derives the rupiah cost from these four, so anything sent
@@ -1495,7 +1512,7 @@ function AddProductForm({
             <>
               <span>RATE: {fmt(selectedCountry.kurs)}</span>
               <span>SHIPPING/KG: {fmt(selectedCountry.cargoPerKg)}</span>
-              <span>FEE: {fmt(Math.round(valasFee))}</span>
+              <span>FEE: {fmt(Number(profitFixed) || 0)}</span>
               <span>COST: {fmt(Math.round(pricePreview.cogs))}</span>
               <span className={profitTone(pricePreview.price - pricePreview.cogs)}>
                 PROFIT: Rp {fmt(Math.round(pricePreview.price - pricePreview.cogs))}
@@ -1507,9 +1524,9 @@ function AddProductForm({
           <>
             <span>COST: {fmt(Math.round(pricePreview.cogs))}</span>
             <span>FEE: {fmt(Number(profitFixed) || 0)}</span>
-            {/* price − cost is exactly the typed fee here, so this is not a second
-                calculation of the same thing — it is the same number, labelled as what it
-                means. */}
+            {/* price − cost is the typed fee PLUS whatever rounding up to
+                RUPIAH_TIER_FEE_ROUND_TO added — see pricePreview above — so this can now
+                exceed the typed FEE by a few hundred rupiah, same as valas mode's bar. */}
             <span className={profitTone(pricePreview.price - pricePreview.cogs)}>
               PROFIT: Rp {fmt(Math.round(pricePreview.price - pricePreview.cogs))}
             </span>
@@ -1897,10 +1914,11 @@ function AddProductForm({
                 {/* Gram lives in the header row beside Product Name now, same as rupiah
                     mode, so the second line is the resolved fee and the price it produces.
 
-                    Read-only, unlike rupiah mode's Fee input: this one comes from the
-                    country's brackets and the server resolves it on save, so a typed value
-                    would be a typed margin. Shown to two decimals because a valas fee can
-                    be fractional where a rupiah one cannot. */}
+                    Editable, same as rupiah mode's Fee input: pre-filled from the country's
+                    brackets (the effect above), but a typed value wins on save — see
+                    lib/pricing-server.ts. Whole rupiah, like the rupiah-mode field, even
+                    though the underlying resolver can be fractional; profit_fixed is an
+                    INTEGER column either way. */}
                 <div className="col-span-6 md:col-span-6">
                   {/* Rupiah, not the country's currency: the shared valas set is keyed on the
                       DERIVED base cost, so both the floor and the fee are rupiah. The popover
@@ -1910,6 +1928,7 @@ function AddProductForm({
                     action={
                       <TierFeePopover
                         base={valasBase}
+                        entered={Number(profitFixed) || 0}
                         brackets={scopedFeeBrackets}
                         unit="Rp"
                         rounding={productDefaults?.tierKursRoundTo ?? DEFAULT_PRODUCT_DEFAULTS.tierKursRoundTo}
@@ -1917,9 +1936,12 @@ function AddProductForm({
                       />
                     }
                   >
-                    <div className={`${formInputCls} bg-gray-50 text-gray-500 flex items-center tabular-nums`}>
-                      Rp {fmt(Math.round(valasFee))}
-                    </div>
+                    <input
+                      value={profitFixed}
+                      onChange={(e) => { setProfitFixed(e.target.value); setProfitManual(true) }}
+                      type="number" min="0" placeholder="0" disabled={adding}
+                      className={formInputCls}
+                    />
                   </Field>
                 </div>
                 <div className="col-span-6 md:col-span-6">
@@ -2272,9 +2294,6 @@ function EditProductModal({
         cargoPerKg: draftCountry?.cargoPerKg ?? row.cargoPerKg,
       }))
     : 0
-  const draftValasFee = draftTierFeeValas
-    ? resolveRupiahTierFee(draftFeeBrackets ?? [], draftValasBase)
-    : 0
   // Settings owns both flat-fee figures and the server re-reads them on save; this only
   // feeds the preview and the optimistic row patch. In percent mode the fee comes off the
   // base this row is priced from, the same one the server will use.
@@ -2368,7 +2387,8 @@ function EditProductModal({
         kurs: draftCountry?.kurs ?? row.kurs,
         gram: Number(draft.gram) || 0,
         cargoPerKg: draftCountry?.cargoPerKg ?? row.cargoPerKg,
-        fee: draftValasFee,
+        // The editable field, not the raw bracket resolution — see draft.profitFixed.
+        fee: Number(draft.profitFixed) || 0,
         roundTo: productDefaults?.tierKursRoundTo ?? DEFAULT_PRODUCT_DEFAULTS.tierKursRoundTo,
       })
       return { price, cogs: Math.round(cogs), profit: Math.round(price - cogs) }
@@ -2387,8 +2407,14 @@ function EditProductModal({
       const base = Number(draft.cost) || 0
       return { price: calcRupiahFeePrice(base, flatFee), cogs: base, profit: flatFee }
     }
-    return { price: calcRupiahFeePrice(Number(draft.cost) || 0, Number(draft.profitFixed) || 0), cogs: null, profit: null }
-  }, [draft, draftAbroad, draftKurs, draftFlatFee, draftFlatFeeValas, draftTierFeeValas, draftValasFee,
+    // Rupiah-mode Tier Fee — rounded, unlike Flat Fee just above (same calcRupiahFeePrice
+    // arithmetic) — see RUPIAH_TIER_FEE_ROUND_TO.
+    return {
+      price: ceilTo(calcRupiahFeePrice(Number(draft.cost) || 0, Number(draft.profitFixed) || 0), RUPIAH_TIER_FEE_ROUND_TO),
+      cogs: null,
+      profit: null,
+    }
+  }, [draft, draftAbroad, draftKurs, draftFlatFee, draftFlatFeeValas, draftTierFeeValas,
       draftChargedKurs, draftCountry, row.kurs, row.cargoPerKg, productDefaults, flatFee, tierKursCostRate])
 
   async function handleSave() {
@@ -2422,10 +2448,10 @@ function EditProductModal({
         // Not sent for valas-mode Flat Fee: the server derives that cost from valas, the
         // rate and the freight, and ignores anything here.
         cost: draftTierFeeRupiah || draftFlatFeeRupiah ? Number(draft.cost) || 0 : 0,
-        // Sent for rupiah-mode Tier Fee only. For flat_fee and valas-mode Tier Fee the
-        // server resolves the fee and ignores this, so sending one would imply
-        // otherwise.
-        profitFixed: draftTierFeeRupiah ? Number(draft.profitFixed) || 0 : 0,
+        // Sent for both Tier Fee modes — rupiah has always typed it, valas mode is now
+        // editable too (see the Fee (IDR) field above). Not sent for flat_fee: the
+        // server resolves that fee from Settings and ignores this.
+        profitFixed: draftTierFeeRupiah || draftTierFeeValas ? Number(draft.profitFixed) || 0 : 0,
       }
 
       const res = await fetch(`/api/sheets/products/${row.id}`, {
@@ -2457,12 +2483,10 @@ function EditProductModal({
         // so the patch has to supply the same figure or the Base Cost cell reads 0 until the
         // next refetch. editCalc.cogs is that figure, already rounded.
         cost: draftTierFeeValas || draftFlatFeeValas ? (editCalc.cogs ?? 0) : Number(body.cost) || 0,
-        // Mirrors the server: the resolved fee lands in profit_fixed for BOTH server-resolved
-        // fee modes, so the Fee cell shows it immediately instead of a 0 until the next
-        // refresh. draftValasFee is the Markup valas one, flatFee the Flat Fee one.
-        profitFixed: draftFlatFee ? flatFee
-          : draftTierFeeValas ? Math.round(draftValasFee)
-          : Number(body.profitFixed) || 0,
+        // flatFee is the only one still server-resolved and unsent — both Tier Fee modes
+        // now send their own profitFixed (see the `body` above), so the patch just mirrors
+        // what was sent rather than re-deriving it.
+        profitFixed: draftFlatFee ? flatFee : Number(body.profitFixed) || 0,
       })
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Failed to save")
@@ -2803,9 +2827,11 @@ function EditProductModal({
           </div>
         )}
 
-        {/* Valas mode: the Country + Valas row above supplies the inputs, so all this
-            adds is the resolved fee, the price, and the arithmetic between them. The
-            fee is NOT an input — the server resolves it from the brackets. */}
+        {/* Valas mode: the Country + Valas row above supplies the inputs, so this adds
+            the fee, the price, and the arithmetic between them. The fee is editable,
+            same as rupiah mode's — bracket-prefilled for a NEW row, but this is an
+            edit, so it starts from whatever the row was already priced with (draft's
+            initial profitFixed) and is never silently overwritten by the popover. */}
         {draftTierFeeValas && (
           <>
             <div className="grid grid-cols-2 gap-3">
@@ -2815,6 +2841,7 @@ function EditProductModal({
                 action={
                   <TierFeePopover
                     base={draftValasBase}
+                    entered={Number(draft.profitFixed) || 0}
                     brackets={draftFeeBrackets}
                     unit="Rp"
                     rounding={productDefaults?.tierKursRoundTo ?? DEFAULT_PRODUCT_DEFAULTS.tierKursRoundTo}
@@ -2822,9 +2849,7 @@ function EditProductModal({
                   />
                 }
               >
-                <div className={`${formInputCls} bg-gray-50 text-gray-400 cursor-not-allowed flex items-center`}>
-                  Rp {fmt(Math.round(draftValasFee))}
-                </div>
+                <input value={draft.profitFixed} onChange={(e) => setDraft((d) => ({ ...d, profitFixed: e.target.value }))} type="number" min="0" disabled={saving} className={formInputCls} />
               </Field>
               <Field label="Gram">
                 <input value={draft.gram} onChange={(e) => setDraft((d) => ({ ...d, gram: e.target.value }))} type="number" min="0" disabled={saving} className={formInputCls} />
@@ -2839,24 +2864,12 @@ function EditProductModal({
             {draftCountry && (
               <div className="flex items-center justify-between gap-1 flex-nowrap whitespace-nowrap rounded-lg bg-gray-50 border border-cream-border px-3 py-3 text-[8px] md:text-[9px] text-gray-500">
                 <span>RATE: {fmt(draftCountry.kurs)}</span>
-                {/* Rupiah, not {draftCountry.currency}: since migration 056 the valas set's
-                    fee is a rupiah amount matched on the rupiah base cost. The field above
-                    says "Fee (IDR)" — this used to contradict it. */}
-                <span>FEE: Rp {fmt(Math.round(draftValasFee))}</span>
+                <span>FEE: Rp {fmt(Number(draft.profitFixed) || 0)}</span>
                 <span>COGS: Rp {fmt(editCalc.cogs ?? 0)}</span>
                 <span className="text-green-700 font-semibold">PROFIT: Rp {fmt(editCalc.profit ?? 0)}</span>
               </div>
             )}
 
-            {/* profit_fixed is where the fee a valas-mode row was priced with lives. The
-                superseded shape kept it in a foreign-currency column, so this comparison used
-                to weigh a rupiah fee against a valas one. */}
-            {Math.abs(row.profitFixed - draftValasFee) > 0.5 && (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                This product was priced with a fee of Rp {fmt(row.profitFixed)}. Saving will
-                reprice it at the current Rp {fmt(Math.round(draftValasFee))}.
-              </p>
-            )}
           </>
         )}
 

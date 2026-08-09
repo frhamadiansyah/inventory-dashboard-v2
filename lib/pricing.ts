@@ -13,17 +13,18 @@ export const PRICING_METHODS: readonly PricingMethod[] = [
 
 /** Labels used by the product form and the products table.
  *
- *  The two `_kurs` methods are a family, so the tab that reaches them is labelled for the
- *  family — "Rate" — and the Tier/Flat toggle inside picks the member, exactly as "Markup"
- *  and "Flat Fee" already read. */
+ *  The two `_kurs` methods are a family: tier_kurs/flat_kurs read "Tier Rate"/"Flat Rate",
+ *  and tier_fee/flat_fee read "Tier Fee"/"Flat Fee" — same Tier/Flat pairing, so the two
+ *  families read the same way. The in-form Tier/Flat toggle itself just says "Tier"/"Flat"
+ *  (see feeSourceToggle etc. in ProductsPageClient), not these full labels. */
 export const PRICING_METHOD_LABEL: Record<PricingMethod, string> = {
   overseas: "Profit Margin",
   // The stored value stays `tier_fee` — renaming a pricing_method means a migration and a
   // CHECK constraint change, and the label is the only thing the owner reads. Keep the
   // keyword list in getProductsPaginated's type filter in step with this.
-  tier_fee: "Markup",
+  tier_fee: "Tier Fee",
   flat_fee: "Flat Fee",
-  tier_kurs: "Rate",
+  tier_kurs: "Tier Rate",
   flat_kurs: "Flat Rate",
 }
 

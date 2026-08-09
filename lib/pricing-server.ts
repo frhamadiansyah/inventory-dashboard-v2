@@ -5,7 +5,7 @@
 // how this app has always worked and is left alone here: repricing the whole
 // catalogue server-side is a separate decision with its own migration risk.
 //
-// Three cases are different and get recomputed:
+// Two cases are different and get recomputed:
 //
 //   tier_kurs         — its entire margin IS one number, the inflated rate, and that
 //                       rate is not typed at all: it is looked up from
@@ -15,14 +15,15 @@
 //                       distinguishing this method from Tier Fee. If the body could
 //                       supply it, the two would be the same method with different
 //                       labels.
-//   tier_fee, VALAS   — the fee comes from the shared valas brackets, matched against a
-//                       base cost that is itself derived from valas, the rate and the
-//                       freight; nothing about it is typed either.
 //
-// tier_fee in RUPIAH mode is the exception and keeps the client-computed price: its
-// fee has always been typed on the product, with the brackets merely pre-filling the
-// field, and taking that over would overwrite every manual fee in the catalogue.
-// Which mode a row is in is decided by whether it has a country — see migration 053.
+// tier_fee — in EITHER mode — keeps the client-computed fee: it has always been
+// typed on the product, with the relevant bracket set (rupiah or the shared valas
+// one) merely pre-filling the field, and taking that over would overwrite every
+// manual fee in the catalogue. Valas mode's PRICE is still recomputed here, because
+// its base cost is derived from valas/rate/freight rather than typed — only the fee
+// itself is trusted from the body, falling back to the bracket resolution when a
+// caller omits it. Which mode a row is in is decided by whether it has a country —
+// see migration 053.
 //
 // All lookups happen here, inside the write transaction, so the value that priced the
 // row is the value that was committed.
@@ -195,10 +196,16 @@ export async function computeProductPrice(opts: {
     const inputs = landedInputs(body)
     const landed = Math.round(landedCost(inputs))
 
-    // Resolved from the live table against the RUPIAH base cost, never from the body. No
-    // bracket means a fee of 0, which prices the product at cost — the same visible,
-    // self-correcting failure Tier Kurs has when a country has no brackets.
-    const fee = resolveRupiahTierFee(brackets, landed)
+    // Prefilled from the live table against the RUPIAH base cost, same as before — but now
+    // overridable, the same way rupiah-mode tier_fee's fee has always been typed and merely
+    // bracket-suggested. The form seeds this field from the same resolver and lets it be
+    // edited, so a sent value wins. No bracket AND no sent value means a fee of 0, which
+    // prices the product at cost — the same visible, self-correcting failure Tier Kurs has
+    // when a country has no brackets.
+    const bodyFee = Number(body.profitFixed)
+    const fee = body.profitFixed !== undefined && Number.isFinite(bodyFee)
+      ? bodyFee
+      : resolveRupiahTierFee(brackets, landed)
     const computed = Math.round(calcTierFeeValasPrice({ ...inputs, fee, roundTo }).price)
 
     // Same Sheets-import guard as the other authoritative paths, and the fee is kept with the

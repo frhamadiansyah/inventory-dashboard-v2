@@ -162,3 +162,13 @@ export const DEFAULT_RUPIAH_TIER_FEE_BRACKETS: readonly {
   { minBase: 700_000, feeMode: "fixed", feeValue: 80_000 },
   { minBase: 800_000, feeMode: "percent", feeValue: 15 },
 ]
+
+/**
+ * Rounding step for rupiah-mode Markup Tier's price (base cost + fee).
+ *
+ * Fixed, not a Settings field: unlike the valas scope's roundTo (product_defaults.
+ * tier_kurs_round_to), this only rounds Markup Tier's rupiah-mode price, not Flat
+ * Fee's — the two share calcRupiahFeePrice's plain "cost + fee" arithmetic, but a
+ * shared setting there would round a method nobody asked to change.
+ */
+export const RUPIAH_TIER_FEE_ROUND_TO = 1000
