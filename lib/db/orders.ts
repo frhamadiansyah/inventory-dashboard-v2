@@ -509,7 +509,7 @@ export async function returnOrderUnitsToExcess(
   }
 
   const rows = await db`
-    SELECT o.event, o.unit, o.unit_buy, o.unit_arrive, o.unit_ship, o.unit_hold,
+    SELECT o.event, o.unit, o.unit_buy, o.unit_dispatch, o.unit_arrive, o.unit_ship, o.unit_hold,
            o.receipt, p.name AS product_name
     FROM orders o
     JOIN products p ON p.id = o.product_id
@@ -521,6 +521,7 @@ export async function returnOrderUnitsToExcess(
 
   const unit = Number(r.unit) || 0
   const unitBuy = Number(r.unit_buy) || 0
+  const unitDispatch = Number(r.unit_dispatch) || 0
   const unitArrive = Number(r.unit_arrive) || 0
   const unitShip = Number(r.unit_ship) || 0
   const unitHold = Number(r.unit_hold) || 0
@@ -535,14 +536,18 @@ export async function returnOrderUnitsToExcess(
   }
 
   // Bought units the shrunk order no longer needs become excess. Because
-  // newUnit >= committed >= unitArrive, this never moves arrived stock.
+  // newUnit >= committed >= unitArrive, this never moves arrived stock — but it
+  // can still move already-dispatched (in-transit) stock, so carry forward
+  // however much of the surplus was already dispatched instead of discarding
+  // it (that's what left this stock untracked once it landed in excess_purchase).
   const excessUnits = Math.max(0, unitBuy - newUnit)
+  const excessDispatch = Math.min(excessUnits, Math.max(0, unitDispatch - newUnit))
   const receipt = (r.receipt as string) ?? ""
 
   if (excessUnits > 0) {
     await db`
-      INSERT INTO excess_purchase (event, items, unit_buy, receipt)
-      VALUES (${r.event as string}, ${r.product_name as string}, ${excessUnits}, ${receipt})
+      INSERT INTO excess_purchase (event, items, unit_buy, receipt, unit_dispatch)
+      VALUES (${r.event as string}, ${r.product_name as string}, ${excessUnits}, ${receipt}, ${excessDispatch > 0 ? excessDispatch : null})
     `
   }
 
