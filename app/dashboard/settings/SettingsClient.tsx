@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   TEMPLATE_KEYS,
   REQUIRED_TOKENS,
@@ -129,11 +129,10 @@ export default function SettingsClient() {
       <div className={tab === "business" ? "" : "hidden"}>
         <BusinessProfileSection />
       </div>
-      {/* Every card here is pricing config, so they share one tab. Product defaults holds
-          what is common to more than one method; the rest are per method, in
-          PRICING_METHODS order.
+      {/* Every card here is pricing config, so they share one tab. General holds what is
+          common to more than one method; the rest are per method, in PRICING_METHODS order.
 
-          ProductDefaultsSection renders THREE of them — Product defaults, Profit Margin and
+          ProductDefaultsSection renders THREE of them — General, Profit Margin and
           Markup Flat — because all of those fields live in one product_defaults row behind
           one Save. Splitting the component would mean three components racing to write the
           same record. */}
@@ -152,6 +151,43 @@ export default function SettingsClient() {
 }
 
 const fieldInputCls = "w-full border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
+
+// Click/tap-to-toggle rather than hover-only, so it works the same on touch as on desktop.
+function InfoTooltip({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onPointerDown(e: PointerEvent) {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("pointerdown", onPointerDown)
+    return () => document.removeEventListener("pointerdown", onPointerDown)
+  }, [open])
+
+  return (
+    <div className="relative inline-block" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="More info"
+        className="flex items-center justify-center w-4 h-4 rounded-full text-gray-400 hover:text-brand transition-colors"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="16" x2="12" y2="12" />
+          <line x1="12" y1="8" x2="12.01" y2="8" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-20 w-56 rounded-lg border border-cream-border bg-white shadow-lg p-2.5 text-[10px] text-gray-500 leading-relaxed">
+          {text}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function BusinessProfileSection() {
   const [profile, setProfile] = useState<BusinessProfile | null>(null)
@@ -202,10 +238,6 @@ function BusinessProfileSection() {
 
   function field(key: keyof BusinessProfile, value: string) {
     setProfile((p) => (p ? { ...p, [key]: value } : p))
-  }
-
-  function setProfileNumber(key: "dpPercent", value: string) {
-    setProfile((p) => (p ? { ...p, [key]: Number(value) || 0 } : p))
   }
 
   return (
@@ -267,20 +299,6 @@ function BusinessProfileSection() {
             <input
               value={profile.publicSiteUrl}
               onChange={(e) => field("publicSiteUrl", e.target.value)}
-              className={fieldInputCls}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Down Payment %</span>
-            <span className="text-[10px] text-gray-400">
-              Customers below this % of an event's total get the DP reminder message instead of the invoice message. 0 = feature off.
-            </span>
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={profile.dpPercent}
-              onChange={(e) => setProfileNumber("dpPercent", e.target.value)}
               className={fieldInputCls}
             />
           </label>
@@ -401,34 +419,35 @@ function ProductDefaultsSection() {
     </button>
   )
 
+  // Shared across all three cards: they're one product_defaults record behind one Save, so
+  // Reset here restores DEFAULT_PRODUCT_DEFAULTS for the whole thing, not just the card it's
+  // clicked from.
+  const resetButton = (
+    <button
+      type="button"
+      onClick={handleReset}
+      title="Reset to default"
+      aria-label="Reset to default"
+      className="inline-flex items-center justify-center h-[30px] w-[30px] rounded-lg border border-cream-border text-gray-500 hover:border-brand hover:text-brand transition-colors"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="1 4 1 10 7 10" />
+        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+      </svg>
+    </button>
+  )
+
   return (
     <>
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <h2 className="text-sm font-semibold text-foreground">Product defaults</h2>
+        <h2 className="text-sm font-semibold text-foreground">General</h2>
         <div className="flex items-center gap-3">
           {saved && <span className="text-xs text-green-600">Saved</span>}
-          {/* Reset lives on this card only: it restores DEFAULT_PRODUCT_DEFAULTS, which is
-              the whole record — including the three fields shown in the Markup Flat card
-              below. A second copy there would read as "reset the flat fee settings" and
-              quietly clear the rest. */}
-          <button
-            type="button"
-            onClick={handleReset}
-            title="Reset to default"
-            aria-label="Reset to default"
-            className="inline-flex items-center justify-center h-[30px] w-[30px] rounded-lg border border-cream-border text-gray-500 hover:border-brand hover:text-brand transition-colors"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="1 4 1 10 7 10" />
-              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
-            </svg>
-          </button>
+          {resetButton}
           {saveButton}
         </div>
       </div>
-
-      <p className="text-[10px] text-gray-400">Pre-filled into the Add Product form. Editing this doesn't change any existing product.</p>
 
       {loadError && <p className="text-xs text-red-600">{loadError}</p>}
       {error && <p className="text-xs text-red-600">{error}</p>}
@@ -437,7 +456,10 @@ function ProductDefaultsSection() {
       {defaults && (
         <div className="grid md:grid-cols-3 gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Operational fee</span>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Operational fee</span>
+              <InfoTooltip text="Pre-filled into the Add Product form. Editing this doesn't change any existing product." />
+            </div>
             <input
               type="number"
               value={defaults.operationalFee}
@@ -446,7 +468,10 @@ function ProductDefaultsSection() {
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Packing fee</span>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Packing fee</span>
+              <InfoTooltip text="Pre-filled into the Add Product form. Editing this doesn't change any existing product." />
+            </div>
             <input
               type="number"
               value={defaults.packingFee}
@@ -464,7 +489,24 @@ function ProductDefaultsSection() {
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Default pricing</span>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Down Payment %</span>
+              <InfoTooltip text="Customers below this % of an event's total get the DP reminder message instead of the invoice message. 0 = feature off." />
+            </div>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={defaults.dpPercent}
+              onChange={(e) => field("dpPercent", e.target.value)}
+              className={fieldInputCls}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Default pricing</span>
+              <InfoTooltip text="Which tab the Add Product form opens on. Profit Margin and both Rate methods need a country, so pair one of those with a Default country below or the form opens with that field empty." />
+            </div>
             <select
               value={defaults.defaultPricingMethod}
               onChange={(e) => setDefaultPricingMethod(e.target.value)}
@@ -474,14 +516,12 @@ function ProductDefaultsSection() {
                 <option key={m} value={m}>{PRICING_METHOD_LABEL[m]}</option>
               ))}
             </select>
-            <span className="text-[10px] text-gray-400">
-              Which tab the Add Product form opens on. Profit Margin and both Rate methods
-              need a country, so pair one of those with a Default country below or the form
-              opens with that field empty.
-            </span>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Default country</span>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Default country</span>
+              <InfoTooltip text="Which country the Add Product form starts on. For Markup and Flat Fee this also decides whether that form opens with a typed base cost (IDR) or one derived from valas." />
+            </div>
             <select
               value={defaults.defaultCountryId != null ? String(defaults.defaultCountryId) : ""}
               onChange={(e) => setDefaultCountry(e.target.value)}
@@ -494,11 +534,6 @@ function ProductDefaultsSection() {
                 <option key={c.id} value={c.id}>{c.name} ({c.currency})</option>
               ))}
             </select>
-            <span className="text-[10px] text-gray-400">
-              Which country the Add Product form starts on. For Markup and Flat Fee this also
-              decides whether that form opens with a typed base cost (IDR) or one derived from
-              valas.
-            </span>
           </label>
         </div>
       )}
@@ -515,6 +550,7 @@ function ProductDefaultsSection() {
         <h2 className="text-sm font-semibold text-foreground">Profit Margin</h2>
         <div className="flex items-center gap-3">
           {saved && <span className="text-xs text-green-600">Saved</span>}
+          {resetButton}
           {saveButton}
         </div>
       </div>
@@ -527,21 +563,24 @@ function ProductDefaultsSection() {
       {defaults && (
         <div className="grid md:grid-cols-3 gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Profit %</span>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Profit %</span>
+              <InfoTooltip text="What the Add Product form starts on. Each product keeps its own copy, so editing this changes nothing that already exists. 100 or more leaves nothing to divide into, and the price computes as 0." />
+            </div>
             <input
               type="number"
               value={defaults.profitPct}
               onChange={(e) => field("profitPct", e.target.value)}
               className={fieldInputCls}
             />
-            <span className="text-[10px] text-gray-400">
-              What the Add Product form starts on. Each product keeps its own copy, so
-              editing this changes nothing that already exists. 100 or more leaves nothing to
-              divide into, and the price computes as 0.
-            </span>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Rounding</span>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Rounding</span>
+              {/* Unlike Profit % beside it, this is not a pre-fill — every Profit Margin
+                  product is rounded by whatever this holds when it is saved. */}
+              <InfoTooltip text="Prices round UP to this step. Separate from the Rate card's step, and read on a product's next save — so changing it reprices each one then, not now." />
+            </div>
             <input
               type="number"
               min="1"
@@ -550,12 +589,6 @@ function ProductDefaultsSection() {
               onChange={(e) => field("profitMarginRoundTo", e.target.value)}
               className={fieldInputCls}
             />
-            {/* Unlike Profit % beside it, this is not a pre-fill — every Profit Margin
-                product is rounded by whatever this holds when it is saved. */}
-            <span className="text-[10px] text-gray-400">
-              Prices round UP to this step. Separate from the Rate card&apos;s step, and read
-              on a product&apos;s next save — so changing it reprices each one then, not now.
-            </span>
           </label>
         </div>
       )}
@@ -566,13 +599,14 @@ function ProductDefaultsSection() {
         inside the write transaction, so they are the authority over what a Flat Fee product
         is priced at — the same distinction Tier Kurs rounding carries, one card up.
 
-        Same `defaults` state and the same PATCH, so this Save writes the whole record and
-        the two cards can never disagree. No reset here — see the comment on the one above. */}
+        Same `defaults` state and the same PATCH, so Save/Reset here act on the whole record,
+        same as the other two cards — all three buttons are one shared action. */}
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h2 className="text-sm font-semibold text-foreground">Markup Flat</h2>
         <div className="flex items-center gap-3">
           {saved && <span className="text-xs text-green-600">Saved</span>}
+          {resetButton}
           {saveButton}
         </div>
       </div>
@@ -585,7 +619,10 @@ function ProductDefaultsSection() {
       {defaults && (
         <div className="grid md:grid-cols-3 gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Flat Fee</span>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Flat Fee</span>
+              <InfoTooltip text="Every Flat Fee product is priced base cost + this. Applies on a product's next save." />
+            </div>
             <input
               type="number"
               min="0"
@@ -593,13 +630,12 @@ function ProductDefaultsSection() {
               onChange={(e) => field("flatFee", e.target.value)}
               className={fieldInputCls}
             />
-            <span className="text-[10px] text-gray-400">
-              Every Flat Fee product is priced base cost + this. Applies on a
-              product&apos;s next save.
-            </span>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Flat Fee %</span>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Flat Fee %</span>
+              <InfoTooltip text="Used instead of the amount above by Flat Fee products with Percent switched on. Applies on a product's next save." />
+            </div>
             <input
               type="number"
               min="0"
@@ -609,13 +645,12 @@ function ProductDefaultsSection() {
               onChange={(e) => field("flatFeePct", e.target.value)}
               className={fieldInputCls}
             />
-            <span className="text-[10px] text-gray-400">
-              Used instead of the amount above by Flat Fee products with Percent switched
-              on. Applies on a product&apos;s next save.
-            </span>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-gray-500">Flat Fee minimum</span>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-gray-500">Flat Fee minimum</span>
+              <InfoTooltip text="Floor under the percentage above, for when a small base would earn less than the work costs. 0 = no floor. Percent mode only." />
+            </div>
             <input
               type="number"
               min="0"
@@ -623,10 +658,6 @@ function ProductDefaultsSection() {
               onChange={(e) => field("flatFeeMin", e.target.value)}
               className={fieldInputCls}
             />
-            <span className="text-[10px] text-gray-400">
-              Floor under the percentage above, for when a small base would earn less than
-              the work costs. 0 = no floor. Percent mode only.
-            </span>
           </label>
         </div>
       )}

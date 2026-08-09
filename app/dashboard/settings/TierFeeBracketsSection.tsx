@@ -38,6 +38,60 @@ const iconBtnCls =
 const fmt = (n: number) => n.toLocaleString("id-ID")
 const fmt2 = (n: number) => (Math.round(n * 100) / 100).toLocaleString("id-ID")
 
+// Draft values stay plain dot-decimal numeric strings (Number(draft.minBase) etc. depend
+// on that everywhere else in this file) — these two only convert at the input's edge, for
+// a live id-ID thousand-separator display ("." groups, "," is the decimal point). A valas
+// floor may be fractional, so the split is on the decimal point, not just digits.
+function formatMoney(raw: string): string {
+  if (raw === "") return ""
+  const [intPart, decPart] = raw.split(".")
+  const digits = intPart.replace(/\D/g, "")
+  const grouped = digits === "" ? "" : Number(digits).toLocaleString("id-ID")
+  return decPart !== undefined ? `${grouped},${decPart}` : grouped
+}
+
+function parseMoney(formatted: string): string {
+  const commaIdx = formatted.indexOf(",")
+  if (commaIdx === -1) return formatted.replace(/\D/g, "")
+  const intDigits = formatted.slice(0, commaIdx).replace(/\D/g, "")
+  const decDigits = formatted.slice(commaIdx + 1).replace(/\D/g, "")
+  return `${intDigits}.${decDigits}`
+}
+
+/** A bracket's "from"/fee amount: unit label ("Rp" ahead of the number, "%" after it, like
+ *  the values they annotate are normally written), live thousand-separator formatting. */
+function MoneyInput({
+  value,
+  onChange,
+  placeholder,
+  wrapClassName,
+  unit = "Rp",
+}: {
+  value: string
+  onChange: (raw: string) => void
+  placeholder?: string
+  wrapClassName?: string
+  unit?: "Rp" | "%"
+}) {
+  const isSuffix = unit === "%"
+  return (
+    <div className={`relative ${wrapClassName ?? ""}`}>
+      <span
+        className={`pointer-events-none absolute top-1/2 -translate-y-1/2 text-xs text-gray-400 ${isSuffix ? "right-2" : "left-2"}`}
+      >
+        {unit}
+      </span>
+      <input
+        value={formatMoney(value)}
+        onChange={(e) => onChange(parseMoney(e.target.value))}
+        inputMode="decimal"
+        placeholder={placeholder}
+        className={`${inputCls} w-full ${isSuffix ? "pr-6" : "pl-7"}`}
+      />
+    </div>
+  )
+}
+
 /** Bracket being edited. Strings, as the number inputs produce. */
 type BracketDraft = { minBase: string; feeMode: TierFeeMode; feeValue: string }
 
@@ -288,30 +342,38 @@ function ScopeBrackets({
               // it restates what this bracket charges at its own floor — so it is the one
               // thing here that can go without losing a setting.
               <div key={i} className="flex items-center gap-1.5">
-                <span className="hidden md:inline text-xs text-gray-400 shrink-0 w-12">from</span>
-                <input
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0 w-12">From</span>
+                <MoneyInput
                   value={bracket.minBase}
-                  onChange={(e) => setBracket(i, { minBase: e.target.value })}
-                  type="number" min="0" step={isValas ? "any" : "1"}
+                  onChange={(v) => setBracket(i, { minBase: v })}
                   placeholder="from"
-                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0`}
+                  wrapClassName="flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0"
                 />
-                <span className="hidden md:inline text-xs text-gray-400 shrink-0">fee</span>
-                <select
-                  value={bracket.feeMode}
-                  onChange={(e) => setBracket(i, { feeMode: toTierFeeMode(e.target.value) })}
-                  aria-label="Fee mode"
-                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0`}
-                >
-                  <option value="fixed">{unit}</option>
-                  <option value="percent">% of base</option>
-                </select>
-                <input
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0 ml-2">Fee</span>
+                <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs font-medium flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setBracket(i, { feeMode: "fixed" })}
+                    aria-pressed={bracket.feeMode === "fixed"}
+                    className={`flex-1 py-1.5 transition-colors ${bracket.feeMode === "fixed" ? "bg-brand text-white" : "text-gray-500 hover:bg-cream"}`}
+                  >
+                    {unit}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBracket(i, { feeMode: "percent" })}
+                    aria-pressed={bracket.feeMode === "percent"}
+                    className={`flex-1 py-1.5 transition-colors ${bracket.feeMode === "percent" ? "bg-brand text-white" : "text-gray-500 hover:bg-cream"}`}
+                  >
+                    %
+                  </button>
+                </div>
+                <MoneyInput
                   value={bracket.feeValue}
-                  onChange={(e) => setBracket(i, { feeValue: e.target.value })}
-                  type="number" min="0" step="any"
+                  onChange={(v) => setBracket(i, { feeValue: v })}
                   placeholder="fee"
-                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0`}
+                  unit={bracket.feeMode === "fixed" ? "Rp" : "%"}
+                  wrapClassName="flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0"
                 />
                 {atFloor != null && (
                   <span className="hidden md:inline text-xs text-gray-400 shrink-0 tabular-nums">
@@ -343,21 +405,26 @@ function ScopeBrackets({
           >
             + Bracket
           </button>
-          {/* Only the rupiah scope has a "default": it is the table that used to be
-              hardcoded in the products page. There is no such history for a country. */}
-          {!isValas && (
-            <button
-              type="button"
-              onClick={() => {
-                setDraft(DEFAULT_RUPIAH_TIER_FEE_BRACKETS.map(toDraft))
-                setDirty(true)
-              }}
-              className={btnCls}
-            >
-              Reset to default
-            </button>
-          )}
           <span className="flex-1" />
+          <button
+            type="button"
+            onClick={() => {
+              // Rupiah has a real default — the table that used to be hardcoded in the
+              // products page. Valas never had one; its "default" is the empty set,
+              // same as a fresh install (Markup Tier products with a country price at
+              // cost, no fee, until the owner adds brackets).
+              setDraft(isValas ? [] : DEFAULT_RUPIAH_TIER_FEE_BRACKETS.map(toDraft))
+              setDirty(true)
+            }}
+            title="Reset to default"
+            aria-label="Reset to default"
+            className="inline-flex items-center justify-center h-[30px] w-[30px] rounded-lg border border-cream-border text-gray-500 hover:border-brand hover:text-brand transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="1 4 1 10 7 10" />
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+            </svg>
+          </button>
           <button
             type="button"
             onClick={handleSave}
