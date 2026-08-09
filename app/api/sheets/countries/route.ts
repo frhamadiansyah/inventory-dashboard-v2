@@ -1,16 +1,17 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireSession, requireRole } from "@/lib/api"
-import { getCountries, addCountry } from "@/lib/db"
+import { requireSession, requireOwner } from "@/lib/api"
+import { getCountries, addCountry, withActor } from "@/lib/db"
+import { cached, invalidate } from "@/lib/route-cache"
 
 export async function GET() {
   const { session, error: authError } = await requireSession()
   if (authError) return authError
 
-  const roleError = requireRole(session)
-  if (roleError) return roleError
+  const ownerError = requireOwner(session)
+  if (ownerError) return ownerError
 
   try {
-    const rows = await getCountries()
+    const rows = await cached("countries", getCountries)
     return NextResponse.json({ rows }, { headers: { "Cache-Control": "no-store" } })
   } catch (err) {
     console.error("Failed to fetch countries:", err)
@@ -22,8 +23,8 @@ export async function POST(req: NextRequest) {
   const { session, error: authError } = await requireSession()
   if (authError) return authError
 
-  const roleError = requireRole(session)
-  if (roleError) return roleError
+  const ownerError = requireOwner(session)
+  if (ownerError) return ownerError
 
   try {
     const body = await req.json()
@@ -33,12 +34,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "name is required" }, { status: 400 })
     }
 
-    const result = await addCountry({
+    const result = await withActor(session.user.email, (tx) => addCountry({
       name: String(name),
       currency: String(currency ?? ""),
       kurs: Number(kurs ?? 0),
       cargoPerKg: Number(cargoPerKg ?? 0),
-    })
+    }, tx))
+    invalidate("countries")
 
     return NextResponse.json({ success: true, id: result.id })
   } catch (err) {

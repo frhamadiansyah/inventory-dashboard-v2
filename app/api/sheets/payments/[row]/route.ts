@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireSession, requireRole } from "@/lib/api"
-import { updatePayment, togglePaymentChecked, deletePayment } from "@/lib/db"
+import { requireSession, requireRole, isAdmin } from "@/lib/api"
+import { updatePayment, togglePaymentChecked, updatePaymentRemarks, deletePayment, getPaymentChecked, withActor } from "@/lib/db"
 
 type Params = { params: Promise<{ row: string }> }
 
@@ -25,15 +25,20 @@ export async function PUT(req: NextRequest, { params }: Params) {
       return NextResponse.json({ error: "event and customer are required" }, { status: 400 })
     }
 
-    await updatePayment(rowNumber, {
+    // Admins cannot change the checked status — preserve the stored value.
+    const isCheckedValue = isAdmin(session)
+      ? await getPaymentChecked(rowNumber)
+      : Boolean(isChecked)
+
+    await withActor(session.user.email, (tx) => updatePayment(rowNumber, {
       event: String(event),
       customer: String(customer),
       amount: Number(amount ?? 0),
       account: String(account ?? ""),
-      isChecked: Boolean(isChecked),
+      isChecked: isCheckedValue,
       payDate: String(payDate ?? ""),
       remarks: String(remarks ?? ""),
-    })
+    }, tx))
 
     return NextResponse.json({ success: true })
   } catch (err) {
@@ -57,14 +62,26 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
   try {
     const body = await req.json()
-    if (typeof body.isChecked !== "boolean") {
-      return NextResponse.json({ error: "isChecked (boolean) is required" }, { status: 400 })
+
+    // Toggling the checked status is the one payment action admins cannot perform.
+    if (typeof body.isChecked === "boolean") {
+      if (isAdmin(session)) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+      }
+      await withActor(session.user.email, (tx) => togglePaymentChecked(rowNumber, body.isChecked, tx))
+      return NextResponse.json({ success: true })
     }
-    await togglePaymentChecked(rowNumber, body.isChecked)
-    return NextResponse.json({ success: true })
+
+    // Remarks are freely editable inline (admins included).
+    if (typeof body.remarks === "string") {
+      await withActor(session.user.email, (tx) => updatePaymentRemarks(rowNumber, body.remarks, tx))
+      return NextResponse.json({ success: true })
+    }
+
+    return NextResponse.json({ error: "isChecked (boolean) or remarks (string) is required" }, { status: 400 })
   } catch (err) {
-    console.error("Failed to toggle payment:", err)
-    return NextResponse.json({ error: "Failed to toggle payment" }, { status: 500 })
+    console.error("Failed to patch payment:", err)
+    return NextResponse.json({ error: "Failed to update payment" }, { status: 500 })
   }
 }
 
@@ -82,7 +99,7 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   }
 
   try {
-    await deletePayment(rowNumber)
+    await withActor(session.user.email, (tx) => deletePayment(rowNumber, tx))
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error("Failed to delete payment:", err)

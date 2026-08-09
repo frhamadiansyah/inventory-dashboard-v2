@@ -1,14 +1,23 @@
 "use client"
 
+import { displayIg } from "@/lib/format"
+import TableSkeleton from "@/components/TableSkeleton"
+import DataGrid, { type ColumnDef } from "@/components/DataGrid"
 import { useCallback, useEffect, useMemo, useState } from "react"
-import type { OverpaymentCandidate, RefundRow, RefundReason, RefundStatus } from "@/lib/db"
+import type { InvoiceEvent, InvoiceResult, RefundRow, RefundReason, RefundStatus } from "@/lib/db"
+import { REFUND_REASONS } from "@/lib/db/types"
 import { useSheetOptions } from "@/hooks/useSheetOptions"
 import { fetchJson } from "@/lib/api-fetch"
+import EventSelect from "@/components/EventSelect"
+import SearchableSelect from "@/components/SearchableSelect"
+import { InvoiceDetailDrawer } from "@/app/dashboard/invoice/InvoiceDetailDrawer"
+import { useMessageTemplates } from "@/hooks/useMessageTemplates"
+import { fillTemplate, DEFAULT_TEMPLATES } from "@/lib/message-templates"
 
 const INPUT_CLASS =
   "border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
 
-const REASON_LABELS: Record<RefundReason, string> = {
+const REASON_LABELS: Record<string, string> = {
   overpayment: "Overpayment",
   unavailable: "Item Unavailable",
   shipping_loss: "Lost in Shipping",
@@ -17,10 +26,15 @@ const REASON_LABELS: Record<RefundReason, string> = {
   other: "Other",
 }
 
+// Any reason outside the known presets is a user-typed value — show it as-is.
+const reasonLabel = (reason: RefundReason) => REASON_LABELS[reason] ?? reason
+const toReasonOptions = (reasons: string[]) =>
+  Array.from(new Set([...REFUND_REASONS, ...reasons])).map((r) => ({ value: r, label: REASON_LABELS[r] ?? r }))
+
 const STATUS_LABELS: Record<RefundStatus, string> = {
   pending: "Pending",
-  awaiting_bank_info: "Awaiting Bank Info",
-  ready_to_refund: "Ready to Refund",
+  awaiting_bank_info: "Bank Info",
+  ready_to_refund: "Transfer",
   refunded: "Refunded",
   applied_to_next_order: "Applied to Next Order",
   cancelled: "Cancelled",
@@ -37,8 +51,8 @@ const STATUS_COLORS: Record<RefundStatus, string> = {
 
 const ACTIVE_TABS: { key: RefundStatus | "active"; label: string }[] = [
   { key: "pending", label: "Pending" },
-  { key: "awaiting_bank_info", label: "Awaiting Bank Info" },
-  { key: "ready_to_refund", label: "Ready to Refund" },
+  { key: "awaiting_bank_info", label: "Bank Info" },
+  { key: "ready_to_refund", label: "Transfer" },
   { key: "refunded", label: "Done" },
 ]
 
@@ -46,92 +60,76 @@ function formatRp(n: number) {
   return `Rp ${new Intl.NumberFormat("id-ID").format(n)}`
 }
 
+// A refund with a partial credit applied still has a real remaining amount
+// owed back — that (refundAmount) is what should be shown everywhere. Only
+// once it's fully consumed as credit (refundAmount hits 0) does the historical
+// "applied as credit" figure become the more meaningful number to display.
+function isFullyAppliedAsCredit(row: RefundRow): boolean {
+  return row.refundAmount <= 0 && row.appliedCreditAmount > 0
+}
+function displayAmount(row: RefundRow): number {
+  return isFullyAppliedAsCredit(row) ? row.appliedCreditAmount : row.refundAmount
+}
+
+// A non-null liveOverpayment means the server found this refund's stored amount
+// no longer matches the real overpayment and couldn't auto-fix it (credit was
+// already applied). Returns the human message, or null when nothing to review.
+function reviewMessage(row: RefundRow): string | null {
+  const live = row.liveOverpayment
+  if (live == null) return null
+  if (live <= 0) {
+    const owed = -live
+    return owed > 0
+      ? `No overpayment left — the customer now owes ${formatRp(owed)} on this event (items were added after credit was applied). Consider cancelling this refund.`
+      : `No overpayment left — this event is now fully settled. Consider cancelling this refund.`
+  }
+  return `Overpayment is now ${formatRp(live)}, but this refund still shows ${formatRp(row.refundAmount)} (the invoice changed after credit was applied). Review before refunding.`
+}
+
 // ─── Main component ──────────────────────────────────────────────────────────
 
 export default function RefundsClient() {
   const options = useSheetOptions()
   const [rows, setRows] = useState<RefundRow[]>([])
-  const [candidates, setCandidates] = useState<OverpaymentCandidate[]>([])
+  const [dbReasons, setDbReasons] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [tab, setTab] = useState<RefundStatus>("pending")
-  const [selectedEvent, setSelectedEvent] = useState("")
-  const [search, setSearch] = useState("")
   const [creating, setCreating] = useState(false)
+  const [mobileCreating, setMobileCreating] = useState(false)
   const [editRow, setEditRow] = useState<RefundRow | null>(null)
-  const [creatingCandidates, setCreatingCandidates] = useState<Set<string>>(new Set())
-  const [candidatesCollapsed, setCandidatesCollapsed] = useState(false)
+  const [eventFilter, setEventFilter] = useState("")
 
-  const fetchRows = useCallback(() => {
+  const reasonOptions = useMemo(() => toReasonOptions(dbReasons), [dbReasons])
+
+  const fetchRows = useCallback((forceScan = false) => {
     setLoading(true)
     setError("")
     const params = new URLSearchParams()
-    if (selectedEvent) params.set("event", selectedEvent)
-    Promise.all([
-      fetchJson<{ rows: RefundRow[] }>(`/api/sheets/refunds?${params}`),
-      fetchJson<{ candidates: OverpaymentCandidate[] }>("/api/sheets/refunds/overpayments"),
-    ])
-      .then(([refundsData, candidatesData]) => {
-        setRows(refundsData.rows ?? [])
-        setCandidates(candidatesData.candidates ?? [])
-      })
+    // GET /refunds auto-materializes overpayment refunds server-side (throttled).
+    // Refresh passes forceScan=1 to run the detection immediately regardless of
+    // the throttle window; normal opens reuse the throttled result. Event/search
+    // filtering is done client-side by the DataGrid, so we always load all rows.
+    if (forceScan) params.set("forceScan", "1")
+    fetchJson<{ rows: RefundRow[]; reasons: string[] }>(`/api/sheets/refunds?${params}`)
+      .then((data) => { setRows(data.rows ?? []); setDbReasons(data.reasons ?? []) })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load"))
       .finally(() => setLoading(false))
-  }, [selectedEvent])
+  }, [])
 
   useEffect(() => { fetchRows() }, [fetchRows])
 
-  async function createFromCandidate(c: OverpaymentCandidate) {
-    const key = `${c.event}|${c.customer}`
-    setCreatingCandidates((prev) => new Set(prev).add(key))
-    try {
-      const res = await fetch("/api/sheets/refunds", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          event: c.event,
-          customer: c.customer,
-          reason: "overpayment",
-          refundAmount: c.overpayment,
-          note: `Auto-detected: paid Rp ${c.totalPaid.toLocaleString("id-ID")} of Rp ${c.invoiceTotal.toLocaleString("id-ID")}`,
-        }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? "Failed")
-      setRows((prev) => [data.row, ...prev])
-      setCandidates((prev) => prev.filter((x) => !(x.event === c.event && x.customer === c.customer)))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create refund")
-    } finally {
-      setCreatingCandidates((prev) => {
-        const next = new Set(prev)
-        next.delete(key)
-        return next
-      })
-    }
-  }
-
-  async function createAllCandidates() {
-    for (const c of visibleCandidates) {
-      await createFromCandidate(c)
-    }
-  }
-
-  const visibleCandidates = useMemo(() => {
-    if (!selectedEvent) return candidates
-    return candidates.filter((c) => c.event === selectedEvent)
-  }, [candidates, selectedEvent])
-
   const doneStatuses: RefundStatus[] = ["refunded", "applied_to_next_order", "cancelled"]
 
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase()
-    return rows.filter((r) => {
-      const matchTab = tab === "refunded" ? doneStatuses.includes(r.status) : r.status === tab
-      const matchSearch = !q || r.customer.toLowerCase().includes(q) || r.event.toLowerCase().includes(q)
-      return matchTab && matchSearch
-    })
-  }, [rows, tab, search])
+  // Tabs pre-filter by status stage; the DataGrid then does search / per-column
+  // sort & filter over the resulting set.
+  const tabFiltered = useMemo(() => {
+    return rows.filter((r) =>
+      (tab === "refunded" ? doneStatuses.includes(r.status) : r.status === tab) &&
+      (!eventFilter || r.event === eventFilter),
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, tab, eventFilter])
 
   const counts = useMemo(() => {
     const c: Partial<Record<RefundStatus | "done", number>> = {}
@@ -142,6 +140,100 @@ export default function RefundsClient() {
     return { ...c, done }
   }, [rows])
 
+  const columns = useMemo<ColumnDef<RefundRow, unknown>[]>(() => [
+    {
+      accessorKey: "customer",
+      header: "Customer",
+      size: 180,
+      filterFn: "textContains",
+      cell: ({ row }) => {
+        const r = row.original
+        const msg = reviewMessage(r)
+        return (
+          <div className="flex items-center gap-1.5 font-medium text-foreground">
+            {displayIg(r.customer)}
+            {msg && (
+              <span title={msg} className="text-amber-500 shrink-0">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              </span>
+            )}
+          </div>
+        )
+      },
+    },
+    {
+      accessorKey: "event",
+      header: "Event",
+      size: 130,
+      filterFn: "textContains",
+      cell: ({ getValue }) => <span className="text-gray-600">{getValue<string>()}</span>,
+    },
+    {
+      id: "reason",
+      accessorFn: (r) => reasonLabel(r.reason),
+      header: "Reason",
+      size: 150,
+      filterFn: "textContains",
+      cell: ({ getValue }) => <span className="text-gray-600">{getValue<string>()}</span>,
+    },
+    {
+      id: "amount",
+      accessorFn: (r) => displayAmount(r),
+      header: "Amount",
+      size: 150,
+      filterFn: "numeric",
+      meta: { align: "right" },
+      cell: ({ getValue }) => (
+        <span className="tabular-nums font-semibold text-foreground">{formatRp(getValue<number>())}</span>
+      ),
+    },
+    {
+      id: "status",
+      accessorFn: (r) => STATUS_LABELS[r.status],
+      header: "Status",
+      size: 150,
+      filterFn: "textContains",
+      cell: ({ row }) => (
+        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${STATUS_COLORS[row.original.status]}`}>
+          {STATUS_LABELS[row.original.status]}
+        </span>
+      ),
+    },
+    {
+      // Hidden by default — exists only so the Done tab can sort by completion
+      // time (updatedAt = when the refund reached its terminal status).
+      accessorKey: "updatedAt",
+      header: "Updated",
+      enableColumnFilter: false,
+    },
+  ], [])
+
+  const renderMobileCard = useCallback((r: RefundRow) => {
+    const msg = reviewMessage(r)
+    return (
+      <div className="rounded-xl border border-cream-border bg-white p-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)] flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm font-semibold text-foreground">{r.event}</span>
+            <span className="text-xs text-gray-400 uppercase truncate">{displayIg(r.customer)}</span>
+            {msg && (
+              <span title={msg} className="text-amber-500 shrink-0">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              </span>
+            )}
+          </div>
+        </div>
+        <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">{formatRp(displayAmount(r))}</span>
+      </div>
+    )
+  }, [])
+
   function handleUpdated(updated: RefundRow) {
     setRows((prev) => prev.map((r) => r.id === updated.id ? updated : r))
     setEditRow(null)
@@ -149,7 +241,6 @@ export default function RefundsClient() {
 
   function handleCreated(created: RefundRow) {
     setRows((prev) => [created, ...prev])
-    setCreating(false)
     setTab("pending")
   }
 
@@ -158,64 +249,35 @@ export default function RefundsClient() {
     setEditRow(null)
   }
 
+  if (loading) return <TableSkeleton />
+  if (error) {
+    return (
+      <div className="rounded-xl border border-cream-border bg-white p-8 text-center text-sm text-red-500">
+        {error}
+      </div>
+    )
+  }
+
   return (
     <>
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search customer or event…"
-          className={`${INPUT_CLASS} flex-1 min-w-[180px]`}
-        />
-        <select
-          value={selectedEvent}
-          onChange={(e) => setSelectedEvent(e.target.value)}
-          className={INPUT_CLASS}
-          style={{ width: "12rem" }}
-        >
-          <option value="">All Events</option>
-          {(options?.events ?? []).map((ev) => (
-            <option key={ev} value={ev}>{ev}</option>
-          ))}
-        </select>
-        <button
-          onClick={fetchRows}
-          title="Refresh"
-          className="p-1.5 text-gray-400 hover:text-brand transition-colors rounded"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 12a9 9 0 1 1-6.22-8.56" /><polyline points="21 3 21 9 15 9" />
-          </svg>
-        </button>
-        <button
-          onClick={() => setCreating(true)}
-          className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/90 transition-colors"
-        >
-          + New Refund
-        </button>
-      </div>
-
       {/* Tabs */}
-      <div className="flex border-b border-cream-border gap-0">
+      <div className="flex items-center gap-1 w-full rounded-xl border border-cream-border bg-white p-1 overflow-x-auto">
         {ACTIVE_TABS.map(({ key, label }) => {
-          const baseCount = key === "refunded" ? counts.done : counts[key as RefundStatus]
-          const count = key === "pending" ? (baseCount ?? 0) + visibleCandidates.length : baseCount
+          const count = key === "refunded" ? counts.done : counts[key as RefundStatus]
           const active = tab === key || (key === "refunded" && doneStatuses.includes(tab))
           return (
             <button
               key={key}
               onClick={() => setTab(key === "refunded" ? "refunded" : key as RefundStatus)}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+              className={`flex-1 shrink-0 flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
                 active
-                  ? "border-brand text-brand"
-                  : "border-transparent text-gray-500 hover:text-foreground"
+                  ? "bg-brand text-white"
+                  : "text-gray-500 hover:text-foreground"
               }`}
             >
               {label}
               {count ? (
-                <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full ${active ? "bg-brand/10 text-brand" : "bg-gray-100 text-gray-500"}`}>
+                <span className={`hidden sm:inline text-xs rounded-full px-1.5 py-0.5 tabular-nums ${active ? "bg-white/20 text-white" : "bg-gray-100 text-gray-500"}`}>
                   {count}
                 </span>
               ) : null}
@@ -224,153 +286,93 @@ export default function RefundsClient() {
         })}
       </div>
 
-      {/* Auto-detected overpayments — only on Pending tab */}
-      {tab === "pending" && visibleCandidates.length > 0 && (
-        <div className="rounded-xl border border-yellow-200 bg-yellow-50/50 overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setCandidatesCollapsed((c) => !c)}
-            className={`w-full flex items-center justify-between gap-2 px-4 py-2.5 bg-yellow-100/60 hover:bg-yellow-100 transition-colors ${candidatesCollapsed ? "" : "border-b border-yellow-200"}`}
-          >
-            <div className="flex items-center gap-2 text-sm">
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className={`text-yellow-700 transition-transform duration-200 ${candidatesCollapsed ? "-rotate-90" : ""}`}
+      <div className="mt-3">
+        <DataGrid
+          key={tab}
+          data={tabFiltered}
+          columns={columns}
+          pageSize={25}
+          searchPlaceholder="Search customer or event…"
+          fullWidthSearch
+          tightToolbar
+          boldUppercaseHeader
+          toolbarExtraAfterColumns
+          hideRowCount
+          getRowId={(row) => String(row.id)}
+          onRowClick={(row) => setEditRow(row)}
+          renderMobileCard={renderMobileCard}
+          paginationVariant="simple"
+          initialVisibility={{ updatedAt: false }}
+          // Done tab sorts by completion time (newest first); other tabs by
+          // amount. key={tab} remounts so this re-seeds on tab change.
+          initialSorting={tab === "refunded" ? [{ id: "updatedAt", desc: true }] : [{ id: "amount", desc: true }]}
+          belowToolbar={
+            creating ? (
+              <div className="hidden md:block">
+                <CreateRefundCard
+                  events={options?.events ?? []}
+                  reasonOptions={reasonOptions}
+                  onCreated={handleCreated}
+                  onClose={() => setCreating(false)}
+                />
+              </div>
+            ) : undefined
+          }
+          toolbarExtra={
+            <>
+              <div className="md:hidden w-40 shrink-0">
+                <EventSelect
+                  value={eventFilter}
+                  onChange={setEventFilter}
+                  events={options?.events ?? []}
+                  placeholder="All event"
+                  clearable
+                />
+              </div>
+              <button
+                onClick={() => setCreating((o) => !o)}
+                className={`hidden md:inline-flex items-center gap-1.5 h-[38px] px-3 text-sm rounded-lg border transition-colors ${
+                  creating ? "bg-brand-light text-brand border-brand/30" : "bg-brand text-white border-transparent hover:bg-brand-hover"
+                }`}
               >
-                <path d="M6 9l6 6 6-6" />
-              </svg>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-yellow-700">
-                <circle cx="12" cy="12" r="10" /><path d="M12 8v4" /><path d="M12 16h.01" />
-              </svg>
-              <span className="font-medium text-yellow-800">
-                {visibleCandidates.length} auto-detected overpayment{visibleCandidates.length === 1 ? "" : "s"}
-              </span>
-            </div>
-            {!candidatesCollapsed && visibleCandidates.length > 1 && (
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={(e) => { e.stopPropagation(); createAllCandidates() }}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); createAllCandidates() } }}
-                aria-disabled={creatingCandidates.size > 0}
-                className={`text-xs px-3 py-1.5 rounded-lg border border-yellow-300 text-yellow-800 hover:bg-yellow-100 transition-colors ${creatingCandidates.size > 0 ? "opacity-50 pointer-events-none" : ""}`}
-              >
-                Create all ({visibleCandidates.length})
-              </span>
-            )}
-          </button>
-          {!candidatesCollapsed && (
-          <div className="divide-y divide-yellow-200/60">
-            {visibleCandidates.map((c) => {
-              const key = `${c.event}|${c.customer}`
-              const busy = creatingCandidates.has(key)
-              return (
-                <div key={key} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-foreground">{c.customer}</span>
-                      <span className="text-gray-500">·</span>
-                      <span className="text-gray-600">{c.event}</span>
-                    </div>
-                    <div className="text-xs text-gray-500 mt-0.5">
-                      paid {formatRp(c.totalPaid)} of {formatRp(c.invoiceTotal)} →{" "}
-                      <span className="font-semibold text-yellow-800">+{formatRp(c.overpayment)}</span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => createFromCandidate(c)}
-                    disabled={busy}
-                    className="shrink-0 text-xs px-3 py-1.5 rounded-lg bg-yellow-600 text-white font-medium hover:bg-yellow-700 disabled:opacity-50 transition-colors"
-                  >
-                    {busy ? "Creating…" : "+ Create"}
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-          )}
-        </div>
-      )}
-
-      {/* Table */}
-      <div className="rounded-xl border border-cream-border bg-white overflow-hidden">
-        {loading ? (
-          <div className="py-12 text-center text-sm text-gray-400">Loading…</div>
-        ) : error ? (
-          <div className="py-8 px-4 text-sm text-red-500">{error}</div>
-        ) : (
-          <table className="w-full text-sm border-collapse">
-            <thead>
-              <tr className="border-b border-cream-border bg-gray-50/80">
-                <th className="text-left px-4 py-2.5 font-medium text-gray-500">Customer</th>
-                <th className="text-left px-4 py-2.5 font-medium text-gray-500">Event</th>
-                <th className="text-left px-4 py-2.5 font-medium text-gray-500">Reason</th>
-                <th className="text-right px-4 py-2.5 font-medium text-gray-500">Amount</th>
-                <th className="text-left px-4 py-2.5 font-medium text-gray-500">Status</th>
-                <th className="px-4 py-2.5 w-16" />
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="py-12 text-center text-sm text-gray-400">
-                    No refunds
-                  </td>
-                </tr>
-              ) : filtered.map((row) => (
-                <tr
-                  key={row.id}
-                  className="border-b border-cream-border hover:bg-gray-50/50 transition-colors cursor-pointer"
-                  onClick={() => setEditRow(row)}
-                >
-                  <td className="px-4 py-3 font-medium text-foreground">{row.customer}</td>
-                  <td className="px-4 py-3 text-gray-600">{row.event}</td>
-                  <td className="px-4 py-3 text-gray-600">{REASON_LABELS[row.reason]}</td>
-                  <td className="px-4 py-3 text-right tabular-nums font-semibold text-foreground">
-                    {formatRp(row.refundAmount)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${STATUS_COLORS[row.status]}`}>
-                      {STATUS_LABELS[row.status]}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setEditRow(row) }}
-                      className="text-gray-400 hover:text-brand transition-colors"
-                      title="Open"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
-                      </svg>
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                New Refund
+              </button>
+            </>
+          }
+        />
       </div>
 
-      {creating && (
-        <CreateRefundModal
-          events={options?.events ?? []}
-          onCreated={handleCreated}
-          onClose={() => setCreating(false)}
-        />
+      {/* Mobile add FAB */}
+      <button
+        type="button"
+        onClick={() => setMobileCreating(true)}
+        aria-label="New refund"
+        className="md:hidden fixed right-4 bottom-[calc(5rem+env(safe-area-inset-bottom))] z-30 w-14 h-14 rounded-full bg-brand text-white text-3xl leading-none shadow-lg flex items-center justify-center active:bg-brand/90"
+      >
+        +
+      </button>
+
+      {/* Mobile add sheet */}
+      {mobileCreating && (
+        <div className="md:hidden fixed inset-0 z-40 bg-black/40 flex flex-col justify-end" onClick={() => setMobileCreating(false)}>
+          <div className="max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <CreateRefundCard
+              events={options?.events ?? []}
+              reasonOptions={reasonOptions}
+              onCreated={(row) => { handleCreated(row); setMobileCreating(false); window.scrollTo({ top: 0, behavior: "smooth" }) }}
+              onClose={() => setMobileCreating(false)}
+            />
+          </div>
+        </div>
       )}
 
       {editRow && (
         <RefundDetailModal
           row={editRow}
+          accounts={options?.accounts ?? []}
           onUpdated={handleUpdated}
           onDeleted={() => handleDeleted(editRow.id)}
           onClose={() => setEditRow(null)}
@@ -380,14 +382,16 @@ export default function RefundsClient() {
   )
 }
 
-// ─── Create refund modal ──────────────────────────────────────────────────────
+// ─── Create refund card ──────────────────────────────────────────────────────
 
-function CreateRefundModal({
+function CreateRefundCard({
   events,
+  reasonOptions,
   onCreated,
   onClose,
 }: {
   events: string[]
+  reasonOptions: { value: string; label: string }[]
   onCreated: (row: RefundRow) => void
   onClose: () => void
 }) {
@@ -427,6 +431,7 @@ function CreateRefundModal({
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? "Failed to create")
+      setForm({ event: "", customer: "", reason: "overpayment", refundAmount: "", note: "" })
       onCreated(data.row)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create")
@@ -436,81 +441,116 @@ function CreateRefundModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
-      <form
-        className="bg-white rounded-xl border border-cream-border shadow-xl w-full max-w-md flex flex-col gap-4 p-6"
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={handleSubmit}
-      >
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-semibold text-foreground">New Refund</span>
-          <button type="button" onClick={onClose} className="text-gray-400 hover:text-brand transition-colors">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-          </button>
-        </div>
+    <form onSubmit={handleSubmit} className="rounded-t-2xl md:rounded-xl border-x border-t border-cream-border md:border bg-white p-5 pb-8 md:pb-5 flex flex-col gap-4">
+      <div className="flex items-center justify-between -mx-5 px-5 border-b border-cream-border pb-3 md:mx-0 md:px-0 md:border-b-0 md:pb-0">
+        <span className="text-base md:text-sm font-semibold text-foreground">New Refund</span>
+      </div>
 
-        <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-gray-500">Event</span>
-            <select {...field("event")} required disabled={saving} className={`${INPUT_CLASS} w-full`}>
-              <option value="">Select event…</option>
-              {events.map((ev) => <option key={ev} value={ev}>{ev}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-gray-500">Customer (Instagram ID)</span>
-            <input {...field("customer")} required disabled={saving} placeholder="@username" className={`${INPUT_CLASS} w-full`} />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-gray-500">Reason</span>
-            <select {...field("reason")} disabled={saving} className={`${INPUT_CLASS} w-full`}>
-              {(Object.entries(REASON_LABELS) as [RefundReason, string][]).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-gray-500">Refund Amount (Rp)</span>
-            <input
-              {...field("refundAmount")}
-              type="number"
-              min="1"
-              required
-              disabled={saving}
-              placeholder="e.g. 150000"
-              className={`${INPUT_CLASS} w-full`}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-gray-500">Note <span className="font-normal text-gray-400">(optional)</span></span>
-            <textarea {...field("note")} disabled={saving} rows={2} placeholder="Additional context…" className={`${INPUT_CLASS} w-full resize-none`} />
-          </label>
-        </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-gray-500">Event</span>
+          <EventSelect value={form.event} onChange={(v) => setForm((f) => ({ ...f, event: v }))} events={events} disabled={saving} />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-gray-500">Customer (Instagram ID)</span>
+          <input {...field("customer")} required disabled={saving} placeholder="@username" className={`${INPUT_CLASS} w-full`} />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-gray-500">Reason</span>
+          <SearchableSelect
+            value={form.reason}
+            onChange={(v) => setForm((f) => ({ ...f, reason: v }))}
+            options={reasonOptions}
+            placeholder="Select or type…"
+            allowNewValue
+            disabled={saving}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-gray-500">Refund Amount (Rp)</span>
+          <input
+            {...field("refundAmount")}
+            type="number"
+            min="1"
+            required
+            disabled={saving}
+            placeholder="e.g. 150000"
+            className={`${INPUT_CLASS} w-full`}
+          />
+        </label>
+      </div>
 
-        {error && <p className="text-xs text-red-500">{error}</p>}
+      <label className="flex flex-col gap-1">
+        <span className="text-xs font-medium text-gray-500">Note <span className="font-normal text-gray-400">(optional)</span></span>
+        <textarea {...field("note")} disabled={saving} rows={2} placeholder="Additional context…" className={`${INPUT_CLASS} w-full resize-none`} />
+      </label>
 
-        <div className="flex justify-end gap-2 pt-1">
-          <button type="button" onClick={onClose} disabled={saving} className="px-4 py-2 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors">
-            Cancel
-          </button>
-          <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/90 disabled:opacity-50 transition-colors">
-            {saving ? "Creating…" : "Create"}
-          </button>
-        </div>
-      </form>
-    </div>
+      {error && <p className="text-xs text-red-500">{error}</p>}
+
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onClose} disabled={saving} className="px-4 py-2 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors">
+          Cancel
+        </button>
+        <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/90 disabled:opacity-50 transition-colors">
+          {saving ? "Creating…" : "Create"}
+        </button>
+      </div>
+    </form>
   )
 }
 
 // ─── Refund detail modal ──────────────────────────────────────────────────────
 
+// The cash-refund pipeline as linear steps, up to the last one with an action.
+// Once transferred the refund goes read-only and shows a "Transfer Complete"
+// summary instead — no separate "Done" node needed. Terminal side-tracks
+// (cancelled, applied_to_next_order) render their own blocks instead of this.
+const FLOW_STEPS: { status: RefundStatus; label: string }[] = [
+  { status: "pending", label: "Message" },
+  { status: "awaiting_bank_info", label: "Bank Info" },
+  { status: "ready_to_refund", label: "Transfer" },
+]
+
+function StepIndicator({ status }: { status: RefundStatus }) {
+  const current = FLOW_STEPS.findIndex((s) => s.status === status)
+  if (current < 0) return null
+  return (
+    <div className="flex items-center px-6 py-3 border-b border-cream-border">
+      {FLOW_STEPS.map((step, i) => (
+        <div key={step.status} className={`flex items-center ${i > 0 ? "flex-1" : ""}`}>
+          {i > 0 && <div className={`flex-1 h-px mx-2 ${i <= current ? "bg-brand" : "bg-cream-border"}`} />}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span
+              className={`w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center border ${
+                i < current
+                  ? "bg-brand border-brand text-white"
+                  : i === current
+                    ? "border-brand text-brand bg-white"
+                    : "border-gray-300 text-gray-400 bg-white"
+              }`}
+            >
+              {i < current ? "✓" : i + 1}
+            </span>
+            <span className={`text-[11px] ${i === current ? "font-semibold text-brand" : "text-gray-400"}`}>
+              {step.label}
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function RefundDetailModal({
   row,
+  accounts,
   onUpdated,
   onDeleted,
   onClose,
 }: {
   row: RefundRow
+  /** OUR bank names (BCA/JAGO/...) for the execute step's Account picker. */
+  accounts: string[]
   onUpdated: (updated: RefundRow) => void
   onDeleted: () => void
   onClose: () => void
@@ -519,10 +559,48 @@ function RefundDetailModal({
   const [bankAccountNumber, setBankAccountNumber] = useState(row.bankAccountNumber)
   const [bankAccountHolder, setBankAccountHolder] = useState(row.bankAccountHolder)
   const [transferRef, setTransferRef] = useState(row.transferReference)
+  const [refundAccount, setRefundAccount] = useState("")
   const [note, setNote] = useState(row.note)
   const [refundAmount, setRefundAmount] = useState(String(row.refundAmount))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  const [invoiceEvent, setInvoiceEvent] = useState<InvoiceEvent | null>(null)
+  const [invoiceLoading, setInvoiceLoading] = useState(true)
+  const [invoiceError, setInvoiceError] = useState<string | null>(null)
+  // Collapsed-by-default sections keep the modal short enough to never scroll
+  // in the common case — the old layout hid half the workflow below the fold.
+  const [showMessage, setShowMessage] = useState(false)
+  const [showEdit, setShowEdit] = useState(false)
+  // Opens the full invoice as a drawer over this modal instead of navigating
+  // away to /dashboard/invoice, so the refund list keeps its place.
+  const [showFullInvoice, setShowFullInvoice] = useState(false)
+
+  // Apply-as-credit flow: the customer's other orders are the valid targets.
+  const [customerEvents, setCustomerEvents] = useState<InvoiceEvent[]>([])
+  const [showCredit, setShowCredit] = useState(false)
+  const [creditTarget, setCreditTarget] = useState("")
+  const [creditAmount, setCreditAmount] = useState("")
+
+  useEffect(() => {
+    let cancelled = false
+    setInvoiceLoading(true)
+    setInvoiceError(null)
+    fetchJson<InvoiceResult>(`/api/sheets/invoice?customer=${encodeURIComponent(row.customer)}`)
+      .then((data) => {
+        if (cancelled) return
+        setCustomerEvents(data.events)
+        const match = data.events.find((ev) => ev.eventId === row.event) ?? null
+        setInvoiceEvent(match)
+        if (!match) setInvoiceError("No invoice found for this event")
+      })
+      .catch((err) => {
+        if (!cancelled) setInvoiceError(err instanceof Error ? err.message : "Failed to load invoice")
+      })
+      .finally(() => { if (!cancelled) setInvoiceLoading(false) })
+    return () => { cancelled = true }
+  }, [row.customer, row.event])
 
   const isReadOnly = row.status === "refunded" || row.status === "cancelled" || row.status === "applied_to_next_order"
 
@@ -551,6 +629,43 @@ function RefundDetailModal({
     if (ok) onUpdated({ ...row, status })
   }
 
+  async function handleApplyCredit() {
+    if (!creditTarget) { setError("Pick a target order"); return }
+    const amt = Math.round(Number(creditAmount))
+    if (!Number.isFinite(amt) || amt <= 0) { setError("Enter a valid amount"); return }
+    if (amt > row.refundAmount) { setError(`Amount exceeds the overpayment (${formatRp(row.refundAmount)})`); return }
+    const ok = await patch({ action: "apply_credit", targetEvent: creditTarget, amount: amt })
+    if (ok) {
+      const remaining = row.refundAmount - amt
+      onUpdated({
+        ...row,
+        refundAmount: Math.max(0, remaining),
+        appliedCreditAmount: (row.appliedCreditAmount ?? 0) + amt,
+        status: remaining <= 0 ? "applied_to_next_order" : "pending",
+        hasAppliedCredit: true,
+        note: remaining <= 0
+          ? `Applied as credit to ${creditTarget}`
+          : `Applied ${formatRp(amt)} as credit to ${creditTarget}; ${formatRp(remaining)} overpayment remaining`,
+      })
+      setShowCredit(false); setCreditTarget(""); setCreditAmount("")
+    }
+  }
+
+  // Reverses the credit payments and reopens — for when it was applied to the
+  // wrong order (or by mistake). Restores the full overpayment.
+  async function handleUndoCredit() {
+    const ok = await patch({ action: "undo_credit" })
+    if (ok) onUpdated({
+      ...row,
+      status: "pending",
+      hasAppliedCredit: false,
+      // Restore the full overpayment = remaining + what had been applied.
+      refundAmount: row.refundAmount + (row.appliedCreditAmount ?? 0),
+      appliedCreditAmount: 0,
+      note: "",
+    })
+  }
+
   async function handleSaveBankInfo() {
     const ok = await patch({ status: "ready_to_refund", bankName, bankAccountNumber, bankAccountHolder })
     if (!ok) return
@@ -565,13 +680,17 @@ function RefundDetailModal({
 
   async function handleExecute() {
     if (!transferRef.trim()) { setError("Transfer reference is required"); return }
-    const ok = await patch({ action: "execute", transferReference: transferRef.trim() })
+    if (!refundAccount.trim()) { setError("Pick the account the refund was sent from"); return }
+    const ok = await patch({ action: "execute", transferReference: transferRef.trim(), account: refundAccount.trim() })
     if (ok) onUpdated({ ...row, status: "refunded", transferReference: transferRef.trim() })
   }
 
-  async function handleSaveNote() {
+  async function handleSaveEdit() {
     const ok = await patch({ note, refundAmount: Number(refundAmount) })
-    if (ok) onUpdated({ ...row, note, refundAmount: Number(refundAmount) })
+    if (ok) {
+      onUpdated({ ...row, note, refundAmount: Number(refundAmount) })
+      setShowEdit(false)
+    }
   }
 
   async function handleDelete() {
@@ -588,160 +707,278 @@ function RefundDetailModal({
     }
   }
 
-  const waMessage = encodeURIComponent(
-    `Halo ${row.customer} 👋\n\nKami ingin menginformasikan bahwa terdapat pengembalian dana untuk event *${row.event}* sebesar *${formatRp(row.refundAmount)}*.\n\nMohon balas pesan ini dengan informasi rekening bank:\n- Nama Bank:\n- Nomor Rekening:\n- Nama Pemilik Rekening:\n\nTerima kasih 🙏`,
+  // Fully-cancelled invoice lines (unit === 0 is the canonical void marker) are
+  // the items that became unavailable — name them in the message. Lines merely
+  // reduced (e.g. 3 → 2) keep no record of the original quantity, so partial
+  // shortages can't be listed and the message falls back to the generic phrasing.
+  const unavailableItems = (invoiceEvent?.orders ?? [])
+    .filter((o) => o.unit === 0)
+    .map((o) => o.productName)
+  const templates = useMessageTemplates()
+  const waMessageText =
+    unavailableItems.length > 0
+      ? fillTemplate(templates?.refund_specific ?? DEFAULT_TEMPLATES.refund_specific, {
+          customer: row.customer,
+          event: row.event,
+          itemsList: unavailableItems.map((n) => `- ${n}`).join("\n"),
+          refundAmount: formatRp(row.refundAmount),
+        })
+      : fillTemplate(templates?.refund_generic ?? DEFAULT_TEMPLATES.refund_generic, {
+          customer: row.customer,
+          event: row.event,
+          refundAmount: formatRp(row.refundAmount),
+        })
+  const waMessage = encodeURIComponent(waMessageText)
+
+  async function handleCopyMessage() {
+    try {
+      await navigator.clipboard.writeText(waMessageText)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setError("Failed to copy")
+    }
+  }
+
+  // One always-visible primary action per step, pinned in the footer — the old
+  // layout buried each step's CTA inside a scroll area with no scroll affordance.
+  const primaryAction =
+    row.status === "pending" ? (
+      <button
+        onClick={() => handleStatusChange("awaiting_bank_info")}
+        disabled={saving}
+        className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/90 disabled:opacity-50 transition-colors"
+      >
+        Sent
+      </button>
+    ) : row.status === "awaiting_bank_info" ? (
+      <button
+        onClick={handleSaveBankInfo}
+        disabled={saving || !bankName || !bankAccountNumber || !bankAccountHolder}
+        className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/90 disabled:opacity-50 transition-colors"
+      >
+        {saving ? "Saving…" : "Save"}
+      </button>
+    ) : row.status === "ready_to_refund" ? (
+      <button
+        onClick={handleExecute}
+        disabled={saving || !transferRef.trim() || !refundAccount.trim()}
+        className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/90 disabled:opacity-50 transition-colors"
+      >
+        {saving ? "Processing…" : "Refund"}
+      </button>
+    ) : null
+
+  const whatsAppCard = (
+    <div className="flex flex-col gap-2 p-3 rounded-lg bg-gray-50 border border-cream-border">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-medium text-gray-600">Refund message</div>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setShowMessage((v) => !v)}
+            title={showMessage ? "Hide message" : "Preview message"}
+            className="inline-flex items-center justify-center w-6 h-6 rounded border border-cream-border text-gray-500 hover:bg-gray-100 transition-colors shrink-0"
+          >
+            {showMessage ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-10-8-10-8a18.4 18.4 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 10 8 10 8a18.5 18.5 0 0 1-2.16 3.19" />
+                <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+                <path d="M1 1l22 22" />
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M1 12s3-8 11-8 11 8 11 8-3 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={handleCopyMessage}
+            disabled={!templates}
+            title={copied ? "Copied" : "Copy message"}
+            className="inline-flex items-center justify-center w-6 h-6 rounded border border-cream-border text-gray-500 hover:bg-gray-100 transition-colors shrink-0 disabled:opacity-50"
+          >
+            {copied ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            )}
+          </button>
+          <a
+            href={`https://wa.me/?text=${waMessage}`}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => { if (!templates) e.preventDefault() }}
+            title="Open in WhatsApp"
+            className={`inline-flex items-center justify-center w-6 h-6 rounded border border-cream-border text-gray-500 hover:bg-gray-100 transition-colors shrink-0 ${templates ? "" : "opacity-50 pointer-events-none"}`}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.44 1.32 4.94L2.05 22l5.29-1.38a9.9 9.9 0 0 0 4.7 1.2h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.85 9.85 0 0 0 12.04 2zm5.8 14.16c-.24.68-1.2 1.25-1.96 1.41-.52.11-1.2.2-3.5-.75-2.94-1.22-4.83-4.2-4.98-4.4-.15-.19-1.2-1.59-1.2-3.04 0-1.44.75-2.15 1.02-2.45.24-.26.55-.36.79-.36.2 0 .38.01.55.01.18.01.42-.07.65.5.24.6.82 2.06.89 2.21.07.15.12.33.02.53-.1.19-.15.31-.29.48-.15.17-.31.38-.44.51-.15.15-.3.31-.13.6.17.29.75 1.24 1.62 2.01 1.11.99 2.05 1.3 2.34 1.44.29.15.46.13.63-.08.17-.2.72-.84.92-1.13.19-.29.39-.24.65-.14.27.09 1.7.8 1.99.95.29.15.48.22.55.35.07.13.07.75-.17 1.43z" />
+            </svg>
+          </a>
+        </div>
+      </div>
+      {showMessage ? (
+        <p className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed">{waMessageText}</p>
+      ) : null}
+    </div>
   )
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
+    <>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center md:px-4" onClick={onClose}>
       <div
-        className="bg-white rounded-xl border border-cream-border shadow-xl w-full max-w-lg flex flex-col gap-0 overflow-hidden max-h-[90vh]"
+        className="bg-white rounded-t-2xl md:rounded-xl border-x border-t border-cream-border md:border shadow-xl w-full flex flex-col gap-0 overflow-hidden max-h-[96vh] md:max-h-[90vh] md:max-w-lg"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex items-start justify-between gap-3 px-6 py-4 border-b border-cream-border">
-          <div>
-            <div className="text-sm font-semibold text-foreground">{row.customer}</div>
-            <div className="text-xs text-gray-400 mt-0.5">{row.event} · {REASON_LABELS[row.reason]}</div>
+        {/* Header — identity + the one number that matters */}
+        <div className="shrink-0 flex items-start justify-between gap-3 px-6 py-4 border-b border-cream-border">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2">
+              <span className="text-sm font-semibold text-foreground">{row.event}</span>
+              <span className="text-sm text-gray-400 truncate uppercase">{displayIg(row.customer)}</span>
+              {invoiceEvent && (
+                <button
+                  type="button"
+                  onClick={() => setShowFullInvoice(true)}
+                  aria-label="Open full invoice"
+                  title="Open full invoice"
+                  className="text-gray-400 hover:text-brand transition-colors shrink-0"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  </svg>
+                </button>
+              )}
+            </div>
+            <div className="mt-1.5 flex items-baseline gap-2">
+              <span className="text-lg font-bold text-foreground tabular-nums">{formatRp(displayAmount(row))}</span>
+              {isFullyAppliedAsCredit(row) && (
+                <span className="text-[11px] text-gray-400">applied as credit</span>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${STATUS_COLORS[row.status]}`}>
               {STATUS_LABELS[row.status]}
             </span>
-            <button onClick={onClose} className="text-gray-400 hover:text-brand transition-colors">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-            </button>
           </div>
         </div>
 
-        <div className="flex flex-col gap-5 px-6 py-5 overflow-y-auto">
-          {/* Amount + Note */}
-          <div className="flex flex-col gap-3">
-            <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-gray-500">Refund Amount (Rp)</span>
-              {isReadOnly ? (
-                <div className="text-lg font-bold text-foreground">{formatRp(row.refundAmount)}</div>
-              ) : (
-                <input
-                  type="number"
-                  min="1"
-                  value={refundAmount}
-                  onChange={(e) => setRefundAmount(e.target.value)}
-                  disabled={saving}
-                  className={`${INPUT_CLASS} w-full`}
-                />
-              )}
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-gray-500">Note</span>
-              {isReadOnly ? (
-                <p className="text-sm text-gray-600">{row.note || "—"}</p>
-              ) : (
-                <textarea
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  disabled={saving}
-                  rows={2}
-                  className={`${INPUT_CLASS} w-full resize-none`}
-                />
-              )}
-            </label>
-            {!isReadOnly && (
-              <div className="flex justify-end">
-                <button onClick={handleSaveNote} disabled={saving} className="text-xs px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 hover:border-brand hover:text-brand disabled:opacity-50 transition-colors">
-                  Save
-                </button>
-              </div>
-            )}
-          </div>
+        {/* Invoice — one line, expandable. Was a 6-row block eating the modal.
+            Hidden on mobile: the open-invoice icon in the header covers it there. */}
+        <div className="hidden md:block shrink-0 border-b border-cream-border">
+          {invoiceLoading ? (
+            <div className="px-6 py-2.5 text-xs text-gray-400">Loading invoice…</div>
+          ) : invoiceError ? (
+            <div className="px-6 py-2.5 text-xs text-red-500">{invoiceError}</div>
+          ) : invoiceEvent ? (
+            <button
+              type="button"
+              onClick={() => setShowFullInvoice(true)}
+              className="w-full flex items-center justify-between gap-2 px-6 py-2.5 text-xs hover:bg-gray-50/60 transition-colors"
+            >
+              <span className="text-gray-500">
+                Invoice <span className="font-semibold text-foreground tabular-nums">{formatRp(invoiceEvent.invoice.total)}</span>
+                {" · "}Paid <span className="font-semibold text-foreground tabular-nums">{formatRp(invoiceEvent.invoice.pembayaran)}</span>
+              </span>
+            </button>
+          ) : null}
+        </div>
 
-          {/* WhatsApp message (pending / awaiting) */}
-          {(row.status === "pending" || row.status === "awaiting_bank_info") && (
-            <div className="flex flex-col gap-2 p-3 rounded-lg bg-green-50 border border-green-200">
-              <div className="text-xs font-medium text-green-800">WhatsApp Message</div>
-              <p className="text-xs text-green-700 whitespace-pre-wrap leading-relaxed">
-                {decodeURIComponent(waMessage)}
-              </p>
-              <div className="flex gap-2">
-                <a
-                  href={`https://wa.me/?text=${waMessage}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors"
-                >
-                  Open in WhatsApp
-                </a>
-                {row.status === "pending" && (
-                  <button
-                    onClick={() => handleStatusChange("awaiting_bank_info")}
-                    disabled={saving}
-                    className="text-xs px-3 py-1.5 rounded-lg border border-green-300 text-green-700 hover:bg-green-100 disabled:opacity-50 transition-colors"
-                  >
-                    Mark message sent →
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
+        {/* Pipeline position (cash flow only — terminal side-tracks skip it) */}
+        {!isReadOnly && <StepIndicator status={row.status} />}
 
-          {/* Bank info form (awaiting / ready) */}
-          {(row.status === "awaiting_bank_info" || row.status === "ready_to_refund") && (
-            <div className="flex flex-col gap-3">
-              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Bank Details</div>
-              <label className="flex flex-col gap-1">
-                <span className="text-xs font-medium text-gray-500">Bank Name</span>
-                <input
-                  value={bankName}
-                  onChange={(e) => setBankName(e.target.value)}
-                  disabled={saving || row.status === "ready_to_refund"}
-                  placeholder="e.g. BCA, Mandiri"
-                  className={`${INPUT_CLASS} w-full`}
-                />
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-xs font-medium text-gray-500">Account Number</span>
-                <input
-                  value={bankAccountNumber}
-                  onChange={(e) => setBankAccountNumber(e.target.value)}
-                  disabled={saving || row.status === "ready_to_refund"}
-                  placeholder="e.g. 1234567890"
-                  className={`${INPUT_CLASS} w-full`}
-                />
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-xs font-medium text-gray-500">Account Holder Name</span>
-                <input
-                  value={bankAccountHolder}
-                  onChange={(e) => setBankAccountHolder(e.target.value)}
-                  disabled={saving || row.status === "ready_to_refund"}
-                  placeholder="Full name on account"
-                  className={`${INPUT_CLASS} w-full`}
-                />
-              </label>
-              {row.status === "awaiting_bank_info" && (
-                <div className="flex justify-end">
-                  <button
-                    onClick={handleSaveBankInfo}
-                    disabled={saving || !bankName || !bankAccountNumber || !bankAccountHolder}
-                    className="px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand/90 disabled:opacity-50 transition-colors"
-                  >
-                    {saving ? "Saving…" : "Save Bank Info →"}
-                  </button>
+        <div className="flex-1 min-h-0 flex flex-col gap-3 md:gap-4 px-6 py-3 md:py-4 overflow-y-auto">
+          {/* Stale-amount review banner — the invoice changed after credit was
+              applied, so the stored amount no longer matches the real overpayment
+              and the auto-reconcile left it for a human. */}
+          {(() => {
+            const msg = reviewMessage(row)
+            if (!msg) return null
+            return (
+              <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-50 border border-amber-200">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-600 shrink-0 mt-0.5">
+                  <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+                <div className="text-xs text-amber-800">
+                  <span className="font-semibold">Needs review.</span> {msg}
                 </div>
-              )}
+              </div>
+            )
+          })()}
+
+          {/* ── Current step ── */}
+
+          {row.status === "pending" && whatsAppCard}
+
+          {row.status === "awaiting_bank_info" && (
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-3 p-3 rounded-lg bg-gray-50 border border-cream-border">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-gray-600">Bank Name</span>
+                  <input
+                    value={bankName}
+                    onChange={(e) => setBankName(e.target.value)}
+                    disabled={saving}
+                    placeholder="e.g. BCA, Mandiri"
+                    className={`${INPUT_CLASS} w-full`}
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-gray-600">Account Number</span>
+                  <input
+                    value={bankAccountNumber}
+                    onChange={(e) => setBankAccountNumber(e.target.value)}
+                    disabled={saving}
+                    placeholder="e.g. 1234567890"
+                    className={`${INPUT_CLASS} w-full`}
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-gray-600">Account Holder Name</span>
+                  <input
+                    value={bankAccountHolder}
+                    onChange={(e) => setBankAccountHolder(e.target.value)}
+                    disabled={saving}
+                    placeholder="Full name on account"
+                    className={`${INPUT_CLASS} w-full`}
+                  />
+                </label>
+              </div>
+              {/* Customer hasn't replied yet? Message tools stay one click away. */}
+              {whatsAppCard}
             </div>
           )}
 
-          {/* Execute refund */}
           {row.status === "ready_to_refund" && (
-            <div className="flex flex-col gap-3 p-3 rounded-lg bg-orange-50 border border-orange-200">
-              <div className="text-xs font-semibold text-orange-800">Execute Transfer</div>
-              <div className="text-xs text-orange-700">
-                Transfer <span className="font-bold">{formatRp(row.refundAmount)}</span> to{" "}
-                <span className="font-medium">{row.bankName}</span> · {row.bankAccountNumber} · {row.bankAccountHolder}
+            <div className="flex flex-col gap-3 p-3 rounded-lg bg-gray-50 border border-cream-border">
+              <div className="text-xs font-medium text-gray-600">Execute transfer</div>
+              <div className="text-xs text-gray-500">
+                Transfer <span className="font-bold text-foreground">{formatRp(row.refundAmount)}</span> to{" "}
+                <span className="font-medium text-foreground">{row.bankName}</span> · {row.bankAccountNumber} · {row.bankAccountHolder}
               </div>
               <label className="flex flex-col gap-1">
-                <span className="text-xs font-medium text-orange-800">Transfer Reference</span>
+                <span className="text-xs font-medium text-gray-600">Sent from account <span className="text-brand">*</span></span>
+                <SearchableSelect
+                  value={refundAccount}
+                  onChange={setRefundAccount}
+                  options={accounts.map((a) => ({ value: a, label: a }))}
+                  placeholder="Which of our accounts sent it..."
+                  allowNewValue
+                  disabled={saving}
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-gray-600">Transfer Reference</span>
                 <input
                   value={transferRef}
                   onChange={(e) => setTransferRef(e.target.value)}
@@ -750,33 +987,27 @@ function RefundDetailModal({
                   className={`${INPUT_CLASS} w-full`}
                 />
               </label>
-              <button
-                onClick={handleExecute}
-                disabled={saving || !transferRef.trim()}
-                className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:bg-orange-700 disabled:opacity-50 transition-colors"
-              >
-                {saving ? "Processing…" : "Mark as Refunded"}
-              </button>
             </div>
           )}
 
           {/* Refunded — show summary */}
           {row.status === "refunded" && (
-            <div className="flex flex-col gap-1.5 p-3 rounded-lg bg-green-50 border border-green-200 text-xs text-green-800">
-              <div className="font-semibold">Transfer Complete</div>
-              <div>Reference: <span className="font-medium">{row.transferReference || "—"}</span></div>
-              <div>Bank: <span className="font-medium">{row.bankName} · {row.bankAccountNumber}</span></div>
-              <div>Holder: <span className="font-medium">{row.bankAccountHolder}</span></div>
+            <div className="flex flex-col gap-1.5 p-3 rounded-lg bg-gray-50 border border-cream-border text-xs text-gray-500">
+              <div className="font-medium text-gray-600">Transfer complete</div>
+              <div>Reference: <span className="font-medium text-foreground">{row.transferReference || "—"}</span></div>
+              <div>Bank: <span className="font-medium text-foreground">{row.bankName} · {row.bankAccountNumber}</span></div>
+              <div>Holder: <span className="font-medium text-foreground">{row.bankAccountHolder}</span></div>
             </div>
           )}
 
-          {/* Cancelled / applied — allow reopening if pressed by mistake */}
-          {(row.status === "cancelled" || row.status === "applied_to_next_order") && (
+          {/* Cancelled, or marked applied with no credit actually moved (legacy
+              label-only) — nothing to reverse, so a plain status reopen is safe. */}
+          {(row.status === "cancelled" || (row.status === "applied_to_next_order" && !row.hasAppliedCredit)) && (
             <div className="flex items-center justify-between gap-3 p-3 rounded-lg bg-gray-50 border border-gray-200">
               <div className="text-xs text-gray-600">
                 {row.status === "cancelled"
                   ? "This refund was cancelled."
-                  : "This refund was applied to a next order."}
+                  : "Marked as applied to a next order, but no credit was actually moved."}
                 <br />
                 <span className="text-gray-400">Pressed by mistake? Reopen to continue processing.</span>
               </div>
@@ -790,42 +1021,240 @@ function RefundDetailModal({
               </button>
             </div>
           )}
-        </div>
 
-        {/* Footer */}
-        {error && <p className="text-xs text-red-500 px-6 pb-2">{error}</p>}
-        {!isReadOnly && (
-          <div className="flex items-center justify-between gap-2 px-6 py-4 border-t border-cream-border">
-            <div className="flex gap-2">
-              {row.status !== "cancelled" && row.status !== "applied_to_next_order" && (
-                <>
-                  <button
-                    onClick={() => handleStatusChange("applied_to_next_order")}
-                    disabled={saving}
-                    className="text-xs px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 hover:border-purple-400 hover:text-purple-600 disabled:opacity-50 transition-colors"
-                  >
-                    Apply to Next Order
-                  </button>
-                  <button
-                    onClick={() => handleStatusChange("cancelled")}
-                    disabled={saving}
-                    className="text-xs px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 hover:border-red-400 hover:text-red-500 disabled:opacity-50 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </>
+          {/* Credit applied (fully or partially) — undoing REVERSES the credit
+              payments and restores the overpayment, not just relabels. */}
+          {row.hasAppliedCredit && (
+            <div className="flex items-center justify-between gap-3 p-3 rounded-lg bg-purple-50 border border-purple-200">
+              <div className="text-xs text-purple-700">
+                {row.note || "Applied as credit to another order."}
+                <br />
+                <span className="text-purple-500">Wrong order? Undo to reverse the credit{row.status !== "applied_to_next_order" ? " applied so far" : " and reopen this refund"}.</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleUndoCredit}
+                disabled={saving}
+                className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-purple-300 text-purple-700 hover:border-purple-500 hover:bg-purple-100 disabled:opacity-50 transition-colors"
+              >
+                {saving ? "Undoing…" : "↩ Undo credit"}
+              </button>
+            </div>
+          )}
+
+          {/* Edit amount & note — off the main path, one click away */}
+          {!isReadOnly && (
+            <div className="flex flex-col gap-2 p-3 rounded-lg bg-gray-50 border border-cream-border">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-medium text-gray-600">Amount and note</div>
+                <button
+                  type="button"
+                  onClick={() => setShowEdit((v) => !v)}
+                  title={showEdit ? "Hide" : "Edit"}
+                  className="inline-flex items-center justify-center w-6 h-6 rounded border border-cream-border text-gray-500 hover:bg-gray-100 transition-colors shrink-0"
+                >
+                  {showEdit ? (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+                  ) : (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+              {showEdit && (
+                <div className="flex flex-col gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-medium text-gray-500">Refund Amount (Rp)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={refundAmount}
+                      onChange={(e) => setRefundAmount(e.target.value)}
+                      disabled={saving}
+                      className={`${INPUT_CLASS} w-full`}
+                    />
+                  </label>
+                  {row.appliedCreditAmount > 0 && !isFullyAppliedAsCredit(row) && (
+                    <p className="text-[11px] text-gray-400 -mt-2">
+                      {formatRp(row.appliedCreditAmount)} already applied as credit elsewhere — the amount above is what's still left to refund.
+                    </p>
+                  )}
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-medium text-gray-500">Note</span>
+                    <textarea
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      disabled={saving}
+                      rows={2}
+                      className={`${INPUT_CLASS} w-full resize-none`}
+                    />
+                  </label>
+                  <div className="flex justify-end">
+                    <button onClick={handleSaveEdit} disabled={saving} className="text-xs px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 hover:border-brand hover:text-brand disabled:opacity-50 transition-colors">
+                      {saving ? "Saving…" : "Save"}
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
+          )}
+          {isReadOnly && row.note && (
+            <p className="text-xs text-gray-500"><span className="font-medium text-gray-400">Note:</span> {row.note}</p>
+          )}
+
+          {/* Apply as credit — pick which of the customer's other orders to credit */}
+          {!isReadOnly && (
+            <div className="flex flex-col gap-2 p-3 rounded-lg bg-gray-50 border border-cream-border">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-medium text-gray-600">Apply as credit</div>
+                <button
+                  type="button"
+                  onClick={() => setShowCredit((v) => !v)}
+                  title={showCredit ? "Hide" : "Apply as credit"}
+                  className="inline-flex items-center justify-center w-6 h-6 rounded border border-cream-border text-gray-500 hover:bg-gray-100 transition-colors shrink-0"
+                >
+                  {showCredit ? (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+                  ) : (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                  )}
+                </button>
+              </div>
+              {showCredit && (
+              <div className="flex flex-col gap-3">
+              <div className="text-xs text-purple-700">
+                Move up to <span className="font-bold">{formatRp(row.refundAmount)}</span> of overpayment credit to
+                another order for <span className="font-medium">{displayIg(row.customer)}</span>. No cash moves — it
+                leaves this order and counts as payment on the chosen one.
+              </div>
+              {customerEvents.filter((ev) => ev.eventId !== row.event).length === 0 ? (
+                <p className="text-xs text-purple-600">
+                  This customer has no other orders to credit. Create their next order first, then apply the credit.
+                </p>
+              ) : (
+                <>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-medium text-purple-800">Target order (event)</span>
+                    <select
+                      value={creditTarget}
+                      onChange={(e) => {
+                        const id = e.target.value
+                        setCreditTarget(id)
+                        // Default the amount to what the target owes, capped at
+                        // the overpayment — so the common case fully settles the
+                        // target without over-crediting it.
+                        const tgt = customerEvents.find((ev) => ev.eventId === id)
+                        const owed = Math.max(0, tgt?.invoice.sisaPelunasan ?? 0)
+                        setCreditAmount(id ? String(Math.min(row.refundAmount, owed) || row.refundAmount) : "")
+                      }}
+                      disabled={saving}
+                      className={`${INPUT_CLASS} w-full`}
+                    >
+                      <option value="">Select an order…</option>
+                      {customerEvents
+                        .filter((ev) => ev.eventId !== row.event)
+                        .map((ev) => {
+                          const owed = Math.max(0, ev.invoice.sisaPelunasan)
+                          return (
+                            <option key={ev.eventId} value={ev.eventId}>
+                              {ev.eventId} — {owed > 0 ? `owes ${formatRp(owed)}` : "fully paid"}
+                            </option>
+                          )
+                        })}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-medium text-purple-800">Amount to apply (max {formatRp(row.refundAmount)})</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max={row.refundAmount}
+                      value={creditAmount}
+                      onChange={(e) => setCreditAmount(e.target.value)}
+                      disabled={saving || !creditTarget}
+                      className={`${INPUT_CLASS} w-full`}
+                    />
+                  </label>
+                  {(() => {
+                    // Warn (but don't block) when the chosen amount exceeds what
+                    // the target owes: the excess resurfaces as a fresh
+                    // overpayment on that order rather than fully clearing.
+                    const tgt = customerEvents.find((ev) => ev.eventId === creditTarget)
+                    const amt = Math.round(Number(creditAmount)) || 0
+                    if (!tgt || amt <= 0) return null
+                    const owed = Math.max(0, tgt.invoice.sisaPelunasan)
+                    if (amt <= owed) return null
+                    const excess = amt - owed
+                    return (
+                      <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+                        ⚠ {formatRp(amt)} is more than {tgt.eventId} owes ({formatRp(owed)}). The extra{" "}
+                        <span className="font-semibold">{formatRp(excess)}</span> will resurface as a new overpayment
+                        on {tgt.eventId} — no money is lost, but it won't fully clear there.
+                      </p>
+                    )
+                  })()}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleApplyCredit}
+                      disabled={saving || !creditTarget || !(Math.round(Number(creditAmount)) > 0)}
+                      className="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50 transition-colors"
+                    >
+                      {saving ? "Applying…" : "Apply Credit"}
+                    </button>
+                    <button
+                      onClick={() => { setShowCredit(false); setCreditTarget(""); setCreditAmount("") }}
+                      disabled={saving}
+                      className="px-3 py-2 rounded-lg border border-purple-200 text-purple-700 text-sm hover:bg-purple-100 disabled:opacity-50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              )}
+              </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer — Delete (when editable) on the left, Cancel + primary CTA right */}
+        {error && <p className="shrink-0 text-xs text-red-500 px-6 pb-2">{error}</p>}
+        <div className="shrink-0 flex items-center justify-between gap-2 px-6 py-4 border-t border-cream-border">
+          {!isReadOnly ? (
             <button
+              type="button"
               onClick={handleDelete}
               disabled={saving}
-              className="text-xs text-gray-400 hover:text-red-500 disabled:opacity-50 transition-colors"
+              aria-label="Delete"
+              className="inline-flex items-center justify-center h-[38px] border border-cream-border rounded-lg px-3 text-sm text-gray-400 hover:border-brand disabled:opacity-50 transition-colors"
             >
-              Delete
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M10 11v6" /><path d="M14 11v6" />
+              </svg>
             </button>
+          ) : <span />}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+              className="px-4 py-2 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors"
+            >
+              Cancel
+            </button>
+            {primaryAction}
           </div>
-        )}
+        </div>
       </div>
     </div>
+    {showFullInvoice && (
+      // Wrapper raises the drawer (z-40) above this refund modal (z-50).
+      <div className="relative z-[60]">
+        <InvoiceDetailDrawer customer={row.customer} onClose={() => setShowFullInvoice(false)} />
+      </div>
+    )}
+    </>
   )
 }

@@ -3,6 +3,11 @@ import Google from "next-auth/providers/google"
 import { getRole } from "@/lib/roles"
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  // Trust the host/X-Forwarded-Host from the platform proxy. Required on
+  // generic Node hosts like Railway (NextAuth only auto-trusts on Vercel);
+  // without it, sign-in fails with an UntrustedHost error. Safe behind any
+  // trusted reverse proxy, so it's also fine on the current Netlify deploy.
+  trustHost: true,
   providers: [
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID,

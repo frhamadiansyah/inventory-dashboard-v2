@@ -5,13 +5,14 @@ import { usePathname } from "next/navigation"
 import { useState } from "react"
 import { signOutAction } from "@/lib/auth-actions"
 import { Role } from "@/lib/roles"
+import { canAccessRoute } from "@/lib/access"
 
 const ROLE_LABELS: Record<Role, string> = {
   owner: "Owner",
   admin: "Admin",
 }
 
-type NavLink = { href: string; label: string; roles: Role[]; icon: React.ReactNode }
+type NavLink = { href: string; label: string; icon: React.ReactNode }
 type NavSection = { section: string | null; items: NavLink[] }
 
 const NAV_SECTIONS: NavSection[] = [
@@ -20,9 +21,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       {
         href: "/dashboard",
-        label: "Dashboard",
-        roles: ["admin", "owner"],
-        icon: (
+        label: "Dashboard",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="3" width="7" height="7" />
             <rect x="14" y="3" width="7" height="7" />
@@ -34,13 +33,32 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    section: "Events",
+    section: "Database",
     items: [
       {
+        href: "/dashboard/customers",
+        label: "Customers",        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+            <circle cx="9" cy="7" r="4" />
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
+        ),
+      },
+      {
+        href: "/dashboard/countries",
+        label: "Currencies",        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M2 12h20" />
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+          </svg>
+        ),
+      },
+      {
         href: "/dashboard/events",
-        label: "Events",
-        roles: ["owner"],
-        icon: (
+        label: "Events",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="4" width="18" height="18" rx="2" />
             <path d="M16 2v4" />
@@ -51,25 +69,11 @@ const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/dashboard/products",
-        label: "Products",
-        roles: ["owner"],
-        icon: (
+        label: "Products",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
             <path d="m3.3 7 8.7 5 8.7-5" />
             <path d="M12 22V12" />
-          </svg>
-        ),
-      },
-      {
-        href: "/dashboard/countries",
-        label: "Countries",
-        roles: ["owner"],
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <path d="M2 12h20" />
-            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
           </svg>
         ),
       },
@@ -81,10 +85,8 @@ const NAV_SECTIONS: NavSection[] = [
       // TODO: re-enable Form Records once the page is ready
       // { href: "/dashboard/form-records", label: "Form Records", roles: ["admin", "owner"], icon: (...) }
       {
-        href: "/dashboard/duplicate-form",
-        label: "List Order",
-        roles: ["admin", "owner"],
-        icon: (
+        href: "/dashboard/list-order",
+        label: "Order",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" />
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
@@ -93,9 +95,7 @@ const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/dashboard/invoice",
-        label: "Invoice",
-        roles: ["admin", "owner"],
-        icon: (
+        label: "Invoice",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
             <path d="M14 2v6h6" />
@@ -107,25 +107,53 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    section: "Purchasing",
+    section: "Payments",
     items: [
       {
-        href: "/dashboard/purchasing",
-        label: "Purchasing",
-        roles: ["admin", "owner"],
-        icon: (
+        href: "/dashboard/payments",
+        label: "Payments",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z" />
-            <path d="M3 6h18" />
-            <path d="M16 10a4 4 0 0 1-8 0" />
+            <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
+            <line x1="1" y1="10" x2="23" y2="10" />
           </svg>
         ),
       },
       {
+        href: "/dashboard/adjustments",
+        label: "Adjustments",        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+          </svg>
+        ),
+      },
+      {
+        href: "/dashboard/refunds",
+        label: "Refunds",        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+            <path d="M12 7v5l4 2" />
+          </svg>
+        ),
+      },
+      {
+        href: "/dashboard/operational-expenses",
+        label: "Expenses",        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 2v20" />
+            <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+            <circle cx="12" cy="12" r="10" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
+    section: "Procurement",
+    items: [
+      {
         href: "/dashboard/shopping-list",
-        label: "Shopping List",
-        roles: ["admin", "owner"],
-        icon: (
+        label: "Shopping List",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
             <rect x="9" y="3" width="6" height="4" rx="1" />
@@ -134,10 +162,27 @@ const NAV_SECTIONS: NavSection[] = [
         ),
       },
       {
+        href: "/dashboard/dispatch-list",
+        label: "Dispatch List",        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13" />
+            <polygon points="22 2 15 22 11 13 2 9 22 2" />
+          </svg>
+        ),
+      },
+      {
+        href: "/dashboard/arrival-list",
+        label: "Receiving List",        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+            <line x1="12" y1="22.08" x2="12" y2="12" />
+          </svg>
+        ),
+      },
+      {
         href: "/dashboard/excess-purchase",
-        label: "Excess Purchase",
-        roles: ["admin", "owner"],
-        icon: (
+        label: "Inventory",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M3 3h2l.4 2M7 13h10l4-8H5.4" />
             <circle cx="9" cy="21" r="1" />
@@ -150,74 +195,11 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    section: "Payments",
-    items: [
-      {
-        href: "/dashboard/payments",
-        label: "Payments",
-        roles: ["admin", "owner"],
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
-            <line x1="1" y1="10" x2="23" y2="10" />
-          </svg>
-        ),
-      },
-      {
-        href: "/dashboard/refunds",
-        label: "Refunds",
-        roles: ["admin", "owner"],
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-            <path d="M3 3v5h5" />
-            <path d="M12 7v5l4 2" />
-          </svg>
-        ),
-      },
-      {
-        href: "/dashboard/adjustments",
-        label: "Adjustments",
-        roles: ["admin", "owner"],
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-          </svg>
-        ),
-      },
-    ],
-  },
-  {
     section: "Shipping",
     items: [
       {
-        href: "/dashboard/arrive",
-        label: "Unit Arrive",
-        roles: ["admin", "owner"],
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 2v20" /><path d="m17 15-5 5-5-5" />
-            <path d="M2 12h4" /><path d="M18 12h4" />
-          </svg>
-        ),
-      },
-      {
-        href: "/dashboard/arrival-list",
-        label: "Arrival List",
-        roles: ["admin", "owner"],
-        icon: (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
-            <line x1="12" y1="22.08" x2="12" y2="12" />
-          </svg>
-        ),
-      },
-      {
         href: "/dashboard/ship",
-        label: "Ready to Ship",
-        roles: ["admin", "owner"],
-        icon: (
+        label: "Packing List",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M5 17H3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v3" />
             <rect x="9" y="11" width="14" height="10" rx="1" />
@@ -228,9 +210,7 @@ const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/dashboard/shipments",
-        label: "Shipments",
-        roles: ["admin", "owner"],
-        icon: (
+        label: "Shipments",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14" />
             <path d="M16.5 9.4 7.55 4.24" />
@@ -243,9 +223,7 @@ const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/dashboard/custom-label",
-        label: "Custom Label",
-        roles: ["admin", "owner"],
-        icon: (
+        label: "Custom Label",        icon: (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 22H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v7" />
             <path d="M16 2v4" />
@@ -253,6 +231,20 @@ const NAV_SECTIONS: NavSection[] = [
             <path d="M3 10h18" />
             <path d="m19 16-4 4" />
             <path d="m19 20-4-4" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
+    section: "Settings",
+    items: [
+      {
+        href: "/dashboard/settings",
+        label: "Settings",        icon: (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
         ),
       },
@@ -274,7 +266,7 @@ export default function SidebarClient({ user }: Props) {
   const pathname = usePathname()
 
   const visibleSections = NAV_SECTIONS
-    .map((s) => ({ ...s, items: s.items.filter((l) => user.role && l.roles.includes(user.role)) }))
+    .map((s) => ({ ...s, items: s.items.filter((l) => user.role !== null && canAccessRoute(user.role, l.href)) }))
     .filter((s) => s.items.length > 0)
 
   const initials = user.name

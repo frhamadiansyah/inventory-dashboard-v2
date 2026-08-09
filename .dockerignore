@@ -1,0 +1,27 @@
+# Keep the build-context upload small. Deps are installed fresh in the builder
+# (npm ci) and the app is compiled there, so none of this needs to ship.
+node_modules
+.next
+out
+.git
+.gitignore
+
+# Local env / secrets — never part of the build context (Railway injects vars).
+.env
+.env.*
+*.local
+
+# Editor / OS cruft
+.vscode
+.idea
+.DS_Store
+
+# Logs & misc
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Repo-only tooling that the build doesn't need
+.claude
+supabase
+README.md

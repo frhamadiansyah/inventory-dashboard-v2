@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 
-type Filters = { event: string; customer: string; items: string }
+// Arbitrary filter → query-param map. Each non-empty value is sent as a query
+// param named after its key (e.g. { event, customer, items } for orders;
+// { name, store, type, country } for products).
+type Filters = Record<string, string>
 type SortConfig = { key: string; direction: "asc" | "desc" } | null
 
 export type PageData = {
@@ -10,6 +13,8 @@ export type PageData = {
   totalCount: number
   totalPages: number
   page: number
+  filteredSum: number | null
+  filteredValue?: number | null
 }
 
 type FetchState = {
@@ -34,6 +39,16 @@ export function usePaginatedFetch(opts: {
   const onDataRef = useRef(onData)
   onDataRef.current = onData
 
+  // Shape = the part of the request that determines totalCount (search +
+  // filters + sort + pageSize). Server returns totalCount = -1 when we passed
+  // skipCount=true; we splice the cached count back in before invoking onData,
+  // so the consumer never sees the sentinel.
+  const lastFetchedShapeRef = useRef<string | null>(null)
+  const lastTotalCountRef = useRef<number>(0)
+  const lastTotalPagesRef = useRef<number>(1)
+  const lastFilteredSumRef = useRef<number | null>(null)
+  const lastFilteredValueRef = useRef<number | null>(null)
+
   const fetchPage = useCallback(async (
     p: number,
     s: string,
@@ -46,9 +61,9 @@ export function usePaginatedFetch(opts: {
     params.set("page", String(p))
     params.set("pageSize", String(pageSize))
     if (s) params.set("search", s)
-    if (f.event) params.set("event", f.event)
-    if (f.customer) params.set("customer", f.customer)
-    if (f.items) params.set("items", f.items)
+    for (const [key, value] of Object.entries(f)) {
+      if (value) params.set(key, value)
+    }
     if (so) {
       params.set("sortKey", so.key)
       params.set("sortDir", so.direction)
@@ -56,13 +71,49 @@ export function usePaginatedFetch(opts: {
       params.set("newestFirst", "true")
     }
 
+    // The shape excludes the page number — only page is allowed to change
+    // while still skipping the count. Refresh always recounts (data may have
+    // changed under us) so it bypasses the cache via the isRefresh check.
+    const shape = JSON.stringify({ pageSize, s, f, so })
+    const canSkipCount = !isRefresh && lastFetchedShapeRef.current === shape
+    if (canSkipCount) params.set("skipCount", "true")
+
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 30_000)
     try {
       const res = await fetch(`${endpoint}?${params}`, { signal: controller.signal, cache: "no-store" })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? "Failed to load rows")
-      onDataRef.current(data)
+      // Server sends -1 when it skipped the count; substitute the cached value
+      // so the DataGrid keeps showing the correct total.
+      let totalCount = Number(data.totalCount)
+      let totalPages = Number(data.totalPages)
+      if (totalCount < 0) {
+        totalCount = lastTotalCountRef.current
+        totalPages = lastTotalPagesRef.current
+      } else {
+        lastTotalCountRef.current = totalCount
+        lastTotalPagesRef.current = totalPages
+      }
+      // filteredSum is null when the server skipped it (skipCount=true); reuse
+      // the cached value since the sum doesn't change across pages of the same filter.
+      let filteredSum: number | null = data.filteredSum as number | null | undefined ?? null
+      if (filteredSum === null) {
+        filteredSum = lastFilteredSumRef.current
+      } else {
+        lastFilteredSumRef.current = filteredSum
+      }
+      // Same skip-count fallback as filteredSum — the server only computes
+      // filteredValue alongside the count, so it comes back null whenever
+      // skipCount was set.
+      let filteredValue: number | null = data.filteredValue as number | null | undefined ?? null
+      if (filteredValue === null) {
+        filteredValue = lastFilteredValueRef.current
+      } else {
+        lastFilteredValueRef.current = filteredValue
+      }
+      lastFetchedShapeRef.current = shape
+      onDataRef.current({ ...data, totalCount, totalPages, filteredSum, filteredValue })
       setFetchState({ loading: false, error: "", refreshError: "" })
     } catch (err) {
       const msg =

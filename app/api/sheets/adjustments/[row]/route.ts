@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireRole } from "@/lib/api"
-import { updateAdjustment, deleteAdjustment } from "@/lib/db"
+import { updateAdjustment, deleteAdjustment, withActor } from "@/lib/db"
 
 type Params = { params: Promise<{ row: string }> }
 
@@ -25,12 +25,12 @@ export async function PUT(req: NextRequest, { params }: Params) {
       return NextResponse.json({ error: "event and customer are required" }, { status: 400 })
     }
 
-    await updateAdjustment(rowNumber, {
+    await withActor(session.user.email, (tx) => updateAdjustment(rowNumber, {
       event: String(event),
       customer: String(customer),
       description: String(description ?? ""),
       amount: Number(amount ?? 0),
-    })
+    }, tx))
 
     return NextResponse.json({ success: true })
   } catch (err) {
@@ -53,7 +53,7 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   }
 
   try {
-    await deleteAdjustment(rowNumber)
+    await withActor(session.user.email, (tx) => deleteAdjustment(rowNumber, tx))
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error("Failed to delete adjustment:", err)

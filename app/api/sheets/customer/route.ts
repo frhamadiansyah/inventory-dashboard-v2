@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireRole } from "@/lib/api"
-import { lookupCustomerDetail, updateCustomerBankInfo } from "@/lib/db"
+import { lookupCustomerDetail, updateCustomerBankInfo, withActor } from "@/lib/db"
 
 export async function GET(req: NextRequest) {
   const { session, error: authError } = await requireSession()
@@ -32,11 +32,11 @@ export async function PUT(req: NextRequest) {
     if (!instagramId?.trim()) {
       return NextResponse.json({ error: "instagramId is required" }, { status: 400 })
     }
-    await updateCustomerBankInfo(instagramId, {
+    await withActor(session.user.email, (tx) => updateCustomerBankInfo(instagramId, {
       bankName: bankName ?? "",
       bankAccountNumber: bankAccountNumber ?? "",
       bankAccountHolder: bankAccountHolder ?? "",
-    })
+    }, tx))
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error("Failed to update bank info:", err)

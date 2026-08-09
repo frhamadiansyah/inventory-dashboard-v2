@@ -6,8 +6,8 @@ export default function ExcessPurchasePage() {
   return (
     <PageShell>
       <PageHeader
-        title="Excess Purchase"
-        subtitle="Items purchased beyond total ordered quantity"
+        title="Inventory"
+        subtitle="Ready stock from overbuys, overships, and bad items"
       />
       <ExcessTable />
     </PageShell>

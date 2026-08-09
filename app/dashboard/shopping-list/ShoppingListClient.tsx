@@ -1,10 +1,16 @@
 "use client"
 
+import { displayIg, fmt } from "@/lib/format"
+import TableSkeleton from "@/components/TableSkeleton"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { ShoppingListItem, ShoppingListOrder } from "@/lib/db"
+import type { PaidStatus, ShoppingListItem, ShoppingListOrder } from "@/lib/db"
 import { useSheetOptions } from "@/hooks/useSheetOptions"
 import { allocateFifo } from "@/lib/fifo-fill"
 import { fetchJson } from "@/lib/api-fetch"
+import PurchaseModal from "./PurchaseModal"
+import EventSelect from "@/components/EventSelect"
+import SearchInput from "@/components/SearchInput"
+import SelectionActionBar from "@/components/SelectionActionBar"
 
 const INPUT_CLASS =
   "border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
@@ -30,6 +36,11 @@ function groupItems(items: ShoppingListItem[]) {
     storeMap.get(key)!.push(item)
   }
   return map
+}
+
+/** Stable selection key: event + productId (productId repeats across events). */
+function selKey(item: Pick<ShoppingListItem, "event" | "productId">): string {
+  return `${item.event}|${item.productId}`
 }
 
 type RowDescriptor =
@@ -105,19 +116,53 @@ function CollapseBtn({ collapsed, onClick }: { collapsed: boolean; onClick: () =
   )
 }
 
-function CustomerBadge({ orders }: { orders: { customer: string; qty: number }[] }) {
+type CustomerBadgeOrder = { customer: string; qty: number; paidStatus: PaidStatus }
+
+const PAID_DOT: Record<PaidStatus, string> = {
+  paid:    "bg-green-500",
+  partial: "bg-yellow-400",
+  unpaid:  "bg-gray-300",
+}
+const PAID_LABEL: Record<PaidStatus, string> = {
+  paid:    "Paid",
+  partial: "Partial",
+  unpaid:  "Unpaid",
+}
+// What marking these units out of stock means for the customer's money, keyed by
+// how much they've paid. "paid" → now overpaid, so a refund will materialize;
+// "partial" → only refunded if their payment now exceeds the lower invoice;
+// "unpaid" → no refund, the invoice just shrinks.
+const OOS_OUTCOME: Record<PaidStatus, string> = {
+  paid:    "→ refund",
+  partial: "→ refund if overpaid",
+  unpaid:  "→ owes less",
+}
+
+function CustomerBadge({ orders }: { orders: CustomerBadgeOrder[] }) {
   const [open, setOpen] = useState(false)
   const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({})
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
 
   const entries = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const o of orders) map.set(o.customer, (map.get(o.customer) ?? 0) + o.qty)
+    // Orders sharing a customer also share an (event, customer) pair, so they
+    // all carry the same paidStatus — keep the first one we see.
+    const map = new Map<string, { qty: number; paidStatus: PaidStatus }>()
+    for (const o of orders) {
+      const prev = map.get(o.customer)
+      map.set(o.customer, {
+        qty: (prev?.qty ?? 0) + o.qty,
+        paidStatus: prev?.paidStatus ?? o.paidStatus,
+      })
+    }
     return [...map.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([customer, qty]) => ({ customer, qty }))
+      .map(([customer, v]) => ({ customer, qty: v.qty, paidStatus: v.paidStatus }))
   }, [orders])
+
+  const paidCount = entries.filter((e) => e.paidStatus === "paid").length
+  const totalCount = entries.length
+  const allPaid = totalCount > 0 && paidCount === totalCount
 
   useEffect(() => {
     if (!open) return
@@ -162,12 +207,13 @@ function CustomerBadge({ orders }: { orders: { customer: string; qty: number }[]
         ref={triggerRef}
         type="button"
         onClick={handleToggle}
-        className="inline-flex items-center gap-1 text-gray-400 hover:text-brand transition-colors cursor-pointer"
+        title={allPaid ? "All customers paid" : `${paidCount} of ${totalCount} paid`}
+        className="inline-flex items-baseline gap-1 text-gray-400 hover:text-brand transition-colors cursor-pointer"
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="self-center">
           <circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
         </svg>
-        <span className="text-xs">{entries.length}</span>
+        <span className="text-xs tabular-nums">{totalCount}</span>
       </button>
       {open && (
         <div
@@ -180,7 +226,14 @@ function CustomerBadge({ orders }: { orders: { customer: string; qty: number }[]
               key={e.customer}
               className="flex items-center justify-between gap-3 px-3 py-1 text-xs hover:bg-gray-50 whitespace-nowrap"
             >
-              <span className="text-foreground truncate">{e.customer}</span>
+              <span className="flex items-center gap-2 min-w-0">
+                <span
+                  className={`inline-block w-2 h-2 rounded-full shrink-0 ${PAID_DOT[e.paidStatus]}`}
+                  title={PAID_LABEL[e.paidStatus]}
+                  aria-label={PAID_LABEL[e.paidStatus]}
+                />
+                <span className="text-foreground truncate">{displayIg(e.customer)}</span>
+              </span>
               <span className="text-gray-500 tabular-nums shrink-0">{e.qty}×</span>
             </div>
           ))}
@@ -195,24 +248,41 @@ function CustomerBadge({ orders }: { orders: { customer: string; qty: number }[]
 export default function ShoppingListClient() {
   const options = useSheetOptions()
   const [items, setItems] = useState<ShoppingListItem[]>([])
+  const [excessByItem, setExcessByItem] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [selectedEvent, setSelectedEvent] = useState("")
   const [search, setSearch] = useState("")
   const [buyingItem, setBuyingItem] = useState<ShoppingListItem | null>(null)
+  const [applyingExcessItem, setApplyingExcessItem] = useState<ShoppingListItem | null>(null)
+  const [purchaseOpen, setPurchaseOpen] = useState(false)
   const [collapsedEvents, setCollapsedEvents] = useState<Set<string>>(new Set())
   const [collapsedStores, setCollapsedStores] = useState<Set<string>>(new Set())
+  // Multi-select for marking several items purchased under one shared receipt.
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [oosConfirmOpen, setOosConfirmOpen] = useState(false)
 
-  const fetchItems = useCallback((event?: string) => {
-    setLoading(true)
+  const fetchItems = useCallback((event?: string, silent = false) => {
+    if (!silent) setLoading(true)
     setError("")
     const url = event
       ? `/api/sheets/shopping-list?event=${encodeURIComponent(event)}`
       : "/api/sheets/shopping-list"
-    fetchJson<{ items: ShoppingListItem[] }>(url)
-      .then((data) => setItems(data.items ?? []))
+    fetchJson<{ items: ShoppingListItem[]; excessByItem?: Record<string, number> }>(url)
+      .then((data) => {
+        const items = data.items ?? []
+        setItems(items)
+        setExcessByItem(data.excessByItem ?? {})
+        // Stores start collapsed (event headers + store headers visible, items
+        // hidden). Only on an explicit load — a silent post-mutation refresh
+        // leaves whatever the user has expanded alone.
+        if (!silent) {
+          setCollapsedStores(new Set(items.map((i) => `${i.event}|${i.store || "—"}`)))
+        }
+      })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load"))
-      .finally(() => setLoading(false))
+      .finally(() => { if (!silent) setLoading(false) })
   }, [])
 
   useEffect(() => {
@@ -221,9 +291,28 @@ export default function ShoppingListClient() {
 
   // Partial fills change multiple orders' pending qty in non-trivial ways.
   // Refetching is simpler and more correct than incremental local state updates.
+  // Silent so the open modal isn't unmounted by the TableSkeleton fallback.
   function handleBoughtSuccess() {
-    fetchItems(selectedEvent || undefined)
+    fetchItems(selectedEvent || undefined, true)
   }
+
+  // Resolve selected keys back to live items (off `items`, not `filteredItems`,
+  // so a search-hidden selection still submits). Drops anything no longer pending.
+  const selectedItems = useMemo(
+    () => items.filter((i) => selected.has(selKey(i))),
+    [items, selected],
+  )
+
+  function toggleSelect(item: ShoppingListItem) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      const k = selKey(item)
+      if (next.has(k)) next.delete(k)
+      else next.add(k)
+      return next
+    })
+  }
+  function clearSelection() { setSelected(new Set()) }
 
   function toggleEvent(event: string) {
     setCollapsedEvents((prev) => {
@@ -259,13 +348,11 @@ export default function ShoppingListClient() {
     [grouped, collapsedEvents, collapsedStores],
   )
 
-  if (loading) {
-    return (
-      <div className="rounded-xl border border-cream-border bg-white p-8 text-center text-sm text-gray-400">
-        Loading...
-      </div>
-    )
-  }
+  // Select-all over the currently-visible (search-filtered) items.
+  const allSelected = filteredItems.length > 0 && filteredItems.every((i) => selected.has(selKey(i)))
+  const toggleSelectAll = () => setSelected(() => (allSelected ? new Set() : new Set(filteredItems.map(selKey))))
+
+  if (loading) return <TableSkeleton />
 
   if (error) {
     return (
@@ -284,38 +371,59 @@ export default function ShoppingListClient() {
   return (
     <>
       {/* Toolbar */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <input
-          type="text"
+      <div className="flex items-center gap-2 flex-wrap mb-3">
+        <SearchInput
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={setSearch}
           placeholder="Search shopping list…"
-          className={`${INPUT_CLASS} flex-1 min-w-[180px]`}
+          className="flex-1 min-w-0 sm:min-w-[180px]"
         />
-        <select
-          value={selectedEvent}
-          onChange={(e) => setSelectedEvent(e.target.value)}
-          className={INPUT_CLASS}
-          style={{ width: "12rem" }}
-        >
-          <option value="">All Events</option>
-          {(options?.events ?? []).map((ev) => (
-            <option key={ev} value={ev}>{ev}</option>
-          ))}
-        </select>
+        <div className="w-40 shrink-0 sm:w-[12rem]">
+          <EventSelect
+            value={selectedEvent}
+            onChange={(v) => { setSelectedEvent(v); clearSelection() }}
+            events={options?.events ?? []}
+            placeholder="All Events"
+            clearable
+          />
+        </div>
+        {/* Select-all toggle, right of the event filter (both layouts). */}
         <button
-          onClick={() => fetchItems(selectedEvent || undefined)}
-          title="Refresh"
-          className="p-1.5 text-gray-400 hover:text-brand transition-colors rounded"
+          type="button"
+          onClick={toggleSelectAll}
+          aria-label={allSelected ? "Deselect all" : "Select all"}
+          title={allSelected ? "Deselect all" : "Select all"}
+          className="inline-flex items-center gap-1.5 shrink-0 rounded-lg border border-cream-border h-[38px] px-3 text-sm text-gray-600 bg-white hover:border-brand transition-colors"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 12a9 9 0 1 1-6.22-8.56" /><polyline points="21 3 21 9 15 9" />
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 11l3 3L22 4" />
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
           </svg>
+          {allSelected && <span className="w-1.5 h-1.5 rounded-full bg-brand" />}
+        </button>
+        <button
+          onClick={() => setPurchaseOpen(true)}
+          className="hidden md:inline-flex items-center gap-1.5 h-[38px] px-3 text-sm font-medium rounded-lg bg-brand text-white hover:bg-brand-hover transition-colors"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          Add Bulk Purchase
         </button>
       </div>
 
-      {/* Grouped table */}
-      <div className="rounded-xl border border-cream-border bg-white overflow-hidden">
+      {/* Mobile add FAB */}
+      <button
+        type="button"
+        onClick={() => setPurchaseOpen(true)}
+        aria-label="Add bulk purchase"
+        className="md:hidden fixed right-4 bottom-[calc(5rem+env(safe-area-inset-bottom))] z-30 w-14 h-14 rounded-full bg-brand text-white text-3xl leading-none shadow-lg flex items-center justify-center active:bg-brand/90"
+      >
+        +
+      </button>
+
+      {/* Grouped table (desktop) */}
+      <div className="hidden md:block rounded-xl border border-cream-border bg-white overflow-hidden">
         <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="border-b border-cream-border bg-gray-50/80">
@@ -393,38 +501,144 @@ export default function ShoppingListClient() {
                     </td>
                   )}
                   <td className="px-4 py-2.5">
-                    <div className="flex items-baseline gap-1.5">
-                      <span className="text-foreground">{row.item.productName}</span>
-                      <CustomerBadge
-                        orders={row.item.orders.map((o) => ({ customer: o.customer, qty: o.pending }))}
-                      />
+                    <div className="flex items-center gap-2">
+                      {row.item.totalUnits > 0 && (
+                        <input
+                          type="checkbox"
+                          checked={selected.has(selKey(row.item))}
+                          onChange={() => toggleSelect(row.item)}
+                          className="w-4 h-4 shrink-0 accent-brand cursor-pointer"
+                          aria-label={`Select ${row.item.productName}`}
+                        />
+                      )}
+                      <div className="min-w-0">
+                        <div className="text-foreground">{row.item.productName}</div>
+                        <div className="flex items-center gap-1.5 text-xs text-gray-400 tabular-nums">
+                          <CustomerBadge
+                            orders={row.item.orders.map((o) => ({
+                              customer: o.customer,
+                              qty: o.pending,
+                              paidStatus: o.paidStatus,
+                            }))}
+                          />
+                          {" · "}Rp {fmt(row.item.price)}
+                          {row.item.valas > 0 && ` · ${row.item.currency} ${fmt(row.item.valas)}`}
+                        </div>
+                      </div>
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-right">
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
                     <span className="tabular-nums font-bold text-foreground">{row.item.totalUnits}</span>
                     {row.item.totalUnits < row.item.totalOriginal && (
-                      <span className="text-xs text-gray-400 font-normal tabular-nums" title="Partially bought">
+                      <span className="text-gray-400 font-normal tabular-nums" title="Partially bought">
                         {" "}/ {row.item.totalOriginal}
                       </span>
                     )}
                   </td>
                   <td className="px-4 py-2.5">
-                    <button
-                      onClick={() => setBuyingItem(row.item)}
-                      title="Mark as bought"
-                      className="text-gray-400 hover:text-green-600 transition-colors"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" />
-                        <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
-                      </svg>
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      {(excessByItem[row.item.productName] ?? 0) > 0 && (
+                        <button
+                          onClick={() => setApplyingExcessItem(row.item)}
+                          title="Apply excess"
+                          className="text-gray-400 hover:text-brand transition-colors"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                            <path d="m9 11 3 3L22 4" />
+                          </svg>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setBuyingItem(row.item)}
+                        title="Mark purchased"
+                        className="text-gray-400 hover:text-green-600 transition-colors"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" />
+                          <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
+                        </svg>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               )
             })}
           </tbody>
         </table>
+      </div>
+
+      {/* Grouped cards (mobile) */}
+      <div className="md:hidden flex flex-col gap-2.5">
+        {grouped.size === 0 && (
+          <div className="rounded-xl border border-cream-border bg-white p-8 text-center text-sm text-gray-400">No items</div>
+        )}
+        {[...grouped.entries()].map(([event, storeMap]) => {
+          const allItems = [...storeMap.values()].flat()
+          const eventCollapsed = collapsedEvents.has(event)
+          return (
+            <div key={event} className="rounded-xl border border-cream-border bg-white overflow-hidden">
+              <button type="button" onClick={() => toggleEvent(event)} className="w-full flex items-center gap-2.5 px-4 py-3 border-l-[3px] border-brand text-left">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={`text-gray-400 transition-transform ${eventCollapsed ? "-rotate-90" : ""}`}><path d="m6 9 6 6 6-6" /></svg>
+                <span className="font-bold text-sm text-foreground">{event}</span>
+                <span className="ml-auto text-xs text-gray-400">{allItems.length} items</span>
+              </button>
+              {!eventCollapsed && [...storeMap.entries()].map(([store, storeItems]) => {
+                const storeKey = `${event}|${store}`
+                const storeCollapsed = collapsedStores.has(storeKey)
+                return (
+                  <div key={storeKey}>
+                    <button type="button" onClick={() => toggleStore(event, store)} className="w-full flex items-center gap-2 px-4 py-2.5 bg-gray-50/60 border-t border-cream-border text-left">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={`text-gray-400 transition-transform ${storeCollapsed ? "-rotate-90" : ""}`}><path d="m6 9 6 6 6-6" /></svg>
+                      <span className="text-xs font-bold text-gray-600">{store}</span>
+                      <span className="ml-auto text-[11px] text-gray-400">{storeItems.length}</span>
+                    </button>
+                    {!storeCollapsed && storeItems.map((item) => (
+                        <div key={item.productId} className="flex items-center gap-3 px-4 py-2.5 border-t border-cream-border">
+                          {/* Checkbox gated on remaining > 0, mirroring desktop. */}
+                          {item.totalUnits > 0 && (
+                            <input
+                              type="checkbox"
+                              checked={selected.has(selKey(item))}
+                              onChange={() => toggleSelect(item)}
+                              className="w-5 h-5 shrink-0 accent-brand"
+                              aria-label={`Select ${item.productName}`}
+                            />
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs text-foreground">{item.productName}</div>
+                            {/* Same badge as desktop — tap to see who ordered. */}
+                            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-400 tabular-nums">
+                              <CustomerBadge
+                                orders={item.orders.map((o) => ({
+                                  customer: o.customer,
+                                  qty: o.pending,
+                                  paidStatus: o.paidStatus,
+                                }))}
+                              />
+                              {" · "}Rp {fmt(item.price)}
+                              {item.valas > 0 && ` · ${item.currency} ${fmt(item.valas)}`}
+                            </div>
+                          </div>
+                          {/* Match desktop: bold = remaining to buy, faded "/ total" only when partially bought. */}
+                          <div className="text-sm font-bold tabular-nums whitespace-nowrap text-foreground">
+                            {item.totalUnits}
+                            {item.totalUnits < item.totalOriginal && (
+                              <span className="text-gray-400 font-normal" title="Partially bought"> / {item.totalOriginal}</span>
+                            )}
+                          </div>
+                          {(excessByItem[item.productName] ?? 0) > 0 && (
+                            <button type="button" onClick={() => setApplyingExcessItem(item)} aria-label="Apply excess" className="w-9 h-9 rounded-lg border border-cream-border text-brand flex items-center justify-center shrink-0 active:bg-blue-50 active:text-blue-700 active:border-blue-200"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><path d="m9 11 3 3L22 4" /></svg></button>
+                          )}
+                          <button type="button" onClick={() => setBuyingItem(item)} aria-label="Mark purchased" className="w-9 h-9 rounded-lg border border-cream-border text-brand flex items-center justify-center shrink-0 active:bg-green-50 active:text-green-700 active:border-green-200"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" /><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" /></svg></button>
+                        </div>
+                    ))}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })}
       </div>
 
       {buyingItem && (
@@ -437,7 +651,406 @@ export default function ShoppingListClient() {
           }}
         />
       )}
+
+      {applyingExcessItem && (
+        <ApplyShoppingExcessModal
+          item={applyingExcessItem}
+          available={excessByItem[applyingExcessItem.productName] ?? 0}
+          onClose={() => setApplyingExcessItem(null)}
+          onSuccess={() => {
+            handleBoughtSuccess()
+            setApplyingExcessItem(null)
+          }}
+        />
+      )}
+
+      {purchaseOpen && (
+        <PurchaseModal
+          onClose={() => setPurchaseOpen(false)}
+          onProcessed={handleBoughtSuccess}
+        />
+      )}
+
+      {/* Multi-select action bar */}
+      {selected.size > 0 && (
+        <SelectionActionBar
+          reserveFab
+          count={selected.size}
+          onClear={clearSelection}
+          actions={[
+            {
+              label: "Purchased",
+              color: "green",
+              onClick: () => setConfirmOpen(true),
+              icon: (
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ),
+            },
+            {
+              label: "Sold Out",
+              color: "red",
+              onClick: () => setOosConfirmOpen(true),
+              icon: (
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              ),
+            },
+          ]}
+        />
+      )}
+
+      {confirmOpen && (
+        <ConfirmPurchasePanel
+          items={selectedItems}
+          onClose={() => setConfirmOpen(false)}
+          onSuccess={() => { clearSelection(); setConfirmOpen(false); handleBoughtSuccess() }}
+          onPartial={(succeeded) => {
+            setSelected((prev) => {
+              const next = new Set(prev)
+              for (const key of prev) {
+                const ev = key.slice(0, key.lastIndexOf("|"))
+                if (succeeded.includes(ev)) next.delete(key)
+              }
+              return next
+            })
+            handleBoughtSuccess()
+          }}
+        />
+      )}
+
+      {oosConfirmOpen && (
+        <ConfirmOutOfStockPanel
+          items={selectedItems}
+          onClose={() => setOosConfirmOpen(false)}
+          onSuccess={() => { clearSelection(); setOosConfirmOpen(false); handleBoughtSuccess() }}
+          onPartial={(succeededKeys) => {
+            setSelected((prev) => {
+              const next = new Set(prev)
+              for (const key of succeededKeys) next.delete(key)
+              return next
+            })
+            handleBoughtSuccess()
+          }}
+        />
+      )}
     </>
+  )
+}
+
+// ─── Confirm multi-purchase panel ────────────────────────────────────────────
+
+function ConfirmPurchasePanel({
+  items,
+  onClose,
+  onSuccess,
+  onPartial,
+}: {
+  items: ShoppingListItem[]
+  onClose: () => void
+  onSuccess: () => void
+  onPartial: (succeededEvents: string[]) => void
+}) {
+  // Qty per selected item, defaulting to its pending units. Keyed by selKey.
+  const [qtys, setQtys] = useState<Record<string, string>>(() => {
+    const m: Record<string, string> = {}
+    for (const it of items) m[selKey(it)] = String(it.totalUnits)
+    return m
+  })
+  const [receipt, setReceipt] = useState("")
+  const [submitting, setSubmitting] = useState(false)
+  const [errors, setErrors] = useState<string[]>([])
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onClose])
+
+  // /api/sheets/purchasing is per-event, so group the selection by event.
+  const byEvent = useMemo(() => {
+    const m = new Map<string, ShoppingListItem[]>()
+    for (const it of items) {
+      const arr = m.get(it.event) ?? []
+      arr.push(it)
+      m.set(it.event, arr)
+    }
+    return m
+  }, [items])
+
+  const anyQty = items.some((it) => (Number(qtys[selKey(it)]) || 0) > 0)
+  // Title counts units to be purchased (sum of the adjustable qtys), not the
+  // number of product lines — "2 products × 5+4 units" reads as "9 items".
+  const totalQty = items.reduce((s, it) => s + (Number(qtys[selKey(it)]) || 0), 0)
+
+  async function handleSubmit() {
+    if (!anyQty || submitting) return
+    setSubmitting(true)
+    setErrors([])
+
+    const payloads = [...byEvent.entries()]
+      .map(([event, evItems]) => ({
+        event,
+        items: evItems
+          .map((it) => ({ item: it.productName, qty: Number(qtys[selKey(it)]) || 0 }))
+          .filter((l) => l.qty > 0),
+      }))
+      .filter((p) => p.items.length > 0)
+
+    const settled = await Promise.allSettled(
+      payloads.map((p) =>
+        fetch("/api/sheets/purchasing", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ event: p.event, items: p.items, receipt: receipt.trim() }),
+        }).then(async (res) => {
+          const data = await res.json()
+          if (!res.ok) throw new Error(data.error ?? `Failed for ${p.event}`)
+          return p.event
+        }),
+      ),
+    )
+
+    const succeeded: string[] = []
+    const failed: string[] = []
+    settled.forEach((r, i) => {
+      if (r.status === "fulfilled") succeeded.push(payloads[i].event)
+      else failed.push(`${payloads[i].event}: ${r.reason instanceof Error ? r.reason.message : "failed"}`)
+    })
+
+    setSubmitting(false)
+    if (failed.length === 0) {
+      onSuccess()
+    } else {
+      setErrors(failed)
+      if (succeeded.length > 0) onPartial(succeeded)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl border border-cream-border w-full max-w-lg flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="px-5 py-4 border-b border-cream-border shrink-0">
+          <h3 className="text-sm font-semibold text-foreground">
+            Mark {totalQty} item{totalQty === 1 ? "" : "s"} purchased
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">Adjust quantities if needed, then add one receipt for all of them.</p>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto min-h-0 flex flex-col gap-4">
+          {[...byEvent.entries()].map(([event, evItems]) => (
+            <div key={event} className="flex flex-col gap-2">
+              <div className="text-xs font-semibold text-gray-500">{event}</div>
+              {evItems.map((it) => {
+                const k = selKey(it)
+                return (
+                  <div key={k} className="flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-foreground break-words">{it.productName}</div>
+                      {it.store && <div className="text-[11px] text-gray-400">{it.store}</div>}
+                    </div>
+                    <input
+                      type="number"
+                      min="1"
+                      value={qtys[k] ?? ""}
+                      onChange={(e) => setQtys((p) => ({ ...p, [k]: e.target.value }))}
+                      className="w-20 shrink-0 border border-cream-border rounded-lg px-2 py-1.5 text-sm text-right bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
+                    />
+                    <span className="text-[11px] text-gray-400 w-14 shrink-0">/ {it.totalUnits} left</span>
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+
+        <div className="px-5 py-4 border-t border-cream-border shrink-0 flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-gray-500">Receipt (optional)</span>
+            <input
+              type="text"
+              value={receipt}
+              onChange={(e) => setReceipt(e.target.value)}
+              placeholder="e.g. INV-001"
+              className={INPUT_CLASS}
+            />
+          </label>
+          {errors.length > 0 && (
+            <div className="text-xs text-red-600">
+              <div className="font-medium">Some events failed (others were recorded):</div>
+              <ul className="list-disc pl-4">{errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={submitting || !anyQty}
+              className="px-4 py-1.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
+            >
+              {submitting ? "Saving…" : "Mark purchased"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Confirm multi out-of-stock panel ───────────────────────────────────────
+
+function ConfirmOutOfStockPanel({
+  items,
+  onClose,
+  onSuccess,
+  onPartial,
+}: {
+  items: ShoppingListItem[]
+  onClose: () => void
+  onSuccess: () => void
+  onPartial: (succeededKeys: string[]) => void
+}) {
+  // Qty per selected item, defaulting to its pending units. Keyed by selKey.
+  const [qtys, setQtys] = useState<Record<string, string>>(() => {
+    const m: Record<string, string> = {}
+    for (const it of items) m[selKey(it)] = String(it.totalUnits)
+    return m
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [errors, setErrors] = useState<string[]>([])
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose() }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onClose])
+
+  const anyQty = items.some((it) => (Number(qtys[selKey(it)]) || 0) > 0)
+  const totalQty = items.reduce((s, it) => s + (Number(qtys[selKey(it)]) || 0), 0)
+
+  // /api/sheets/shopping-list's out_of_stock action is per-item (unlike buy's
+  // per-event batch /api/sheets/purchasing), so fire one request per item.
+  async function handleSubmit() {
+    if (!anyQty || submitting) return
+    setSubmitting(true)
+    setErrors([])
+
+    const targets = items.filter((it) => (Number(qtys[selKey(it)]) || 0) > 0)
+    const settled = await Promise.allSettled(
+      targets.map((it) =>
+        fetch("/api/sheets/shopping-list", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "out_of_stock",
+            event: it.event,
+            productId: it.productId,
+            quantityOutOfStock: Number(qtys[selKey(it)]) || 0,
+          }),
+        }).then(async (res) => {
+          const data = await res.json()
+          if (!res.ok) throw new Error(data.error ?? `Failed for ${it.productName}`)
+          return selKey(it)
+        }),
+      ),
+    )
+
+    const succeeded: string[] = []
+    const failed: string[] = []
+    settled.forEach((r, i) => {
+      if (r.status === "fulfilled") succeeded.push(r.value)
+      else failed.push(`${targets[i].productName}: ${r.reason instanceof Error ? r.reason.message : "failed"}`)
+    })
+
+    setSubmitting(false)
+    if (failed.length === 0) {
+      onSuccess()
+    } else {
+      setErrors(failed)
+      if (succeeded.length > 0) onPartial(succeeded)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl border border-cream-border w-full max-w-lg flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="px-5 py-4 border-b border-cream-border shrink-0">
+          <h3 className="text-sm font-semibold text-foreground">
+            Mark {totalQty} item{totalQty === 1 ? "" : "s"} out of stock
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">Adjust quantities if needed. Affected pending orders are refunded if paid.</p>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto min-h-0 flex flex-col gap-3">
+          {items.map((it) => {
+            const k = selKey(it)
+            return (
+              <div key={k} className="flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-foreground break-words">{it.productName}</div>
+                  <div className="text-[11px] text-gray-400">{it.event}{it.store ? ` · ${it.store}` : ""}</div>
+                </div>
+                <input
+                  type="number"
+                  min="1"
+                  value={qtys[k] ?? ""}
+                  onChange={(e) => setQtys((p) => ({ ...p, [k]: e.target.value }))}
+                  className="w-20 shrink-0 border border-cream-border rounded-lg px-2 py-1.5 text-sm text-right bg-white focus:outline-none focus:ring-2 focus:ring-red-300 focus:border-red-400 transition-colors"
+                />
+                <span className="text-[11px] text-gray-400 w-14 shrink-0">/ {it.totalUnits} left</span>
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="px-5 py-4 border-t border-cream-border shrink-0 flex flex-col gap-3">
+          {errors.length > 0 && (
+            <div className="text-xs text-red-600">
+              <div className="font-medium">Some items failed (others were recorded):</div>
+              <ul className="list-disc pl-4">{errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={submitting || !anyQty}
+              className="px-4 py-1.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 transition-colors"
+            >
+              {submitting ? "Saving…" : "Mark sold out"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -452,16 +1065,292 @@ function BuyModal({
   onClose: () => void
   onSuccess: () => void
 }) {
+  // "buy" = normal purchase; "oos" = supplier is out of stock, so FIFO-reduce
+  // the pending order quantities (a refund auto-materializes for paid customers).
+  const [mode, setMode] = useState<"buy" | "oos">("buy")
   const [qty, setQty] = useState(String(item.totalUnits))
   const [receipt, setReceipt] = useState("")
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
-  const quantityBought = Math.max(0, Number(qty) || 0)
-  const preview = computeFill(item.orders, quantityBought)
+  const quantity = Math.max(0, Number(qty) || 0)
+  const isOos = mode === "oos"
+  // Buying fills highest-priority customers first (item.orders is already paid →
+  // partial → unpaid). Out of stock is the mirror: cancel lowest-priority first,
+  // so walk the same list reversed. Matches markProductBought / markProductOutOfStock.
+  const preview = computeFill(isOos ? [...item.orders].reverse() : item.orders, quantity)
 
   async function handleSubmit() {
-    if (quantityBought < 1) return
+    if (quantity < 1) return
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const body = isOos
+        ? {
+            action: "out_of_stock",
+            event: item.event,
+            productId: item.productId,
+            quantityOutOfStock: quantity,
+          }
+        : {
+            event: item.event,
+            productId: item.productId,
+            productName: item.productName,
+            quantityBought: quantity,
+            receipt: receipt.trim(),
+          }
+      const res = await fetch("/api/sheets/shopping-list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? (isOos ? "Failed to mark out of stock" : "Failed to mark as bought"))
+      onSuccess()
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : (isOos ? "Failed to mark out of stock" : "Failed to mark as bought"))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl border border-cream-border shadow-xl w-full max-w-sm flex flex-col gap-5 p-6 max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-foreground">{item.productName}</div>
+            <div className="text-xs text-gray-400 mt-0.5">
+              {item.event}{item.store ? ` · ${item.store}` : ""}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-brand transition-colors shrink-0">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Availability tabs */}
+        <div className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-gray-500">Item availability</span>
+          <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs">
+            {([
+              ["buy", "In stock"],
+              ["oos", "Out of stock"],
+            ] as const).map(([m, label]) => {
+              const active = mode === m
+              const activeCls = m === "buy" ? "bg-green-600 text-white" : "bg-red-600 text-white"
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => { setMode(m); setSaveError(null) }}
+                  className={`flex-1 px-2 py-1.5 transition-colors ${active ? `${activeCls} font-medium` : "bg-white text-gray-600 hover:bg-cream"}`}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Qty + Receipt inputs */}
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-gray-500">
+              {isOos ? "Units out of stock" : "Units bought"} <span className="text-gray-400">(remaining: {item.totalUnits})</span>
+            </label>
+            <input
+              type="number"
+              min="1"
+              max={isOos ? item.totalUnits : undefined}
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") onClose() }}
+              autoFocus
+              className="border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
+            />
+          </div>
+          {!isOos && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-gray-500">
+                Receipt <span className="text-gray-400 font-normal">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={receipt}
+                onChange={(e) => setReceipt(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") onClose() }}
+                placeholder="e.g. INV-001"
+                className="border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Live preview — buy */}
+        {!isOos && quantity > 0 && (
+          <div className="flex flex-col gap-2 text-xs">
+            {preview.filled.length > 0 && (
+              <div>
+                <div className="font-medium text-gray-500 mb-1">Will buy ({preview.filled.reduce((s, f) => s + f.allocated, 0)} units):</div>
+                <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto pr-0.5">
+                  {preview.filled.map((f) => (
+                    <div key={f.order.id} className="flex items-center justify-between px-2 py-1 rounded-md bg-green-50">
+                      <span className="text-green-800 truncate">{displayIg(f.order.customer)}</span>
+                      <span className="text-green-700 font-medium ml-2 shrink-0 tabular-nums">
+                        {f.allocated}×
+                        {f.allocated < f.order.pending && (
+                          <span className="text-green-600/70 font-normal"> of {f.order.pending}</span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {preview.unfilled.length > 0 && (
+              <div>
+                <div className="font-medium text-gray-500 mb-1">Stays in list ({preview.unfilled.reduce((s, o) => s + o.pending, 0)} units):</div>
+                <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto pr-0.5">
+                  {preview.unfilled.map((o) => (
+                    <div key={o.id} className="flex items-center justify-between px-2 py-1 rounded-md bg-gray-50">
+                      <span className="text-gray-500 truncate">{displayIg(o.customer)}</span>
+                      <span className="text-gray-400 font-medium ml-2 shrink-0 tabular-nums">{o.pending}×</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {preview.excessUnits > 0 && (
+              <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-amber-50 border border-amber-200">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-600 shrink-0">
+                  <path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                </svg>
+                <span className="text-amber-700 font-medium">{preview.excessUnits} excess units → will be added to Inventory</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Live preview — out of stock */}
+        {isOos && quantity > 0 && (
+          <div className="flex flex-col gap-2 text-xs">
+            {preview.filled.length > 0 && (
+              <div>
+                <div className="font-medium text-gray-500 mb-1">Will cancel ({preview.filled.reduce((s, f) => s + f.allocated, 0)} units):</div>
+                <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto pr-0.5">
+                  {preview.filled.map((f) => (
+                    <div key={f.order.id} className="flex items-center justify-between gap-2 px-2 py-1 rounded-md bg-red-50">
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span
+                          className={`inline-block w-2 h-2 rounded-full shrink-0 ${PAID_DOT[f.order.paidStatus]}`}
+                          title={PAID_LABEL[f.order.paidStatus]}
+                        />
+                        <span className="text-red-800 truncate">{displayIg(f.order.customer)}</span>
+                      </span>
+                      <span className="flex items-center gap-2 shrink-0">
+                        <span className="text-[10px] text-gray-500">{OOS_OUTCOME[f.order.paidStatus]}</span>
+                        <span className="text-red-700 font-medium tabular-nums">
+                          {f.allocated}×
+                          {f.allocated < f.order.pending && (
+                            <span className="text-red-600/70 font-normal"> of {f.order.pending}</span>
+                          )}
+                        </span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {preview.unfilled.length > 0 && (
+              <div>
+                <div className="font-medium text-gray-500 mb-1">Stays in list ({preview.unfilled.reduce((s, o) => s + o.pending, 0)} units):</div>
+                <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto pr-0.5">
+                  {preview.unfilled.map((o) => (
+                    <div key={o.id} className="flex items-center justify-between px-2 py-1 rounded-md bg-gray-50">
+                      <span className="text-gray-500 truncate">{displayIg(o.customer)}</span>
+                      <span className="text-gray-400 font-medium ml-2 shrink-0 tabular-nums">{o.pending}×</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <p className="text-[11px] text-gray-400">
+              These units are removed from each customer&rsquo;s order and invoice. Customers who already paid are refunded only the amount they&rsquo;ve overpaid (on the Refunds page); unpaid customers simply owe less.
+            </p>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2">
+          {saveError && <p className="text-xs text-red-500 mr-auto">{saveError}</p>}
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={saving || quantity < 1}
+            className={`px-4 py-1.5 rounded-lg text-white text-sm font-medium disabled:opacity-50 transition-colors ${isOos ? "bg-red-600 hover:bg-red-700" : "bg-green-600 hover:bg-green-700"}`}
+          >
+            {saving ? "Saving…" : isOos ? "Mark sold out" : "Mark purchased"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Apply excess (from the Shopping List side) ─────────────────────────────
+//
+// Mirror of the Inventory page's "Apply Excess": that flow starts from an
+// excess row and picks target orders; this starts from a Shopping List item
+// and pulls from whichever sellable excess_purchase rows (every reason except
+// broken/missing) match its product name, favoring this event's own excess first.
+
+function ApplyShoppingExcessModal({
+  item,
+  available,
+  onClose,
+  onSuccess,
+}: {
+  item: ShoppingListItem
+  available: number
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const defaultQty = Math.min(available, item.totalUnits)
+  const [qty, setQty] = useState(String(defaultQty))
+  const [receipt, setReceipt] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  const quantity = Math.max(0, Number(qty) || 0)
+  const cap = Math.min(available, item.totalUnits)
+  // Buying fills highest-priority customers first (item.orders is already paid
+  // → partial → unpaid) — same order applyExcessToShoppingItem fills server-side.
+  const preview = computeFill(item.orders, quantity)
+
+  async function handleSubmit() {
+    if (quantity < 1) return
     setSaving(true)
     setSaveError(null)
     try {
@@ -469,18 +1358,19 @@ function BuyModal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          action: "apply_excess",
           event: item.event,
           productId: item.productId,
           productName: item.productName,
-          quantityBought,
+          qty: quantity,
           receipt: receipt.trim(),
         }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? "Failed to mark as bought")
+      if (!res.ok) throw new Error(data.error ?? "Failed to apply excess")
       onSuccess()
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Failed to mark as bought")
+      setSaveError(err instanceof Error ? err.message : "Failed to apply excess")
     } finally {
       setSaving(false)
     }
@@ -514,11 +1404,12 @@ function BuyModal({
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <label className="text-xs font-medium text-gray-500">
-              Units bought <span className="text-gray-400">(remaining: {item.totalUnits})</span>
+              Units to apply <span className="text-gray-400">(available: {available}, needed: {item.totalUnits})</span>
             </label>
             <input
               type="number"
               min="1"
+              max={cap}
               value={qty}
               onChange={(e) => setQty(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") onClose() }}
@@ -542,15 +1433,15 @@ function BuyModal({
         </div>
 
         {/* Live preview */}
-        {quantityBought > 0 && (
+        {quantity > 0 && (
           <div className="flex flex-col gap-2 text-xs">
             {preview.filled.length > 0 && (
               <div>
-                <div className="font-medium text-gray-500 mb-1">Will buy ({preview.filled.reduce((s, f) => s + f.allocated, 0)} units):</div>
+                <div className="font-medium text-gray-500 mb-1">Will apply ({preview.filled.reduce((s, f) => s + f.allocated, 0)} units):</div>
                 <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto pr-0.5">
                   {preview.filled.map((f) => (
                     <div key={f.order.id} className="flex items-center justify-between px-2 py-1 rounded-md bg-green-50">
-                      <span className="text-green-800 truncate">{f.order.customer}</span>
+                      <span className="text-green-800 truncate">{displayIg(f.order.customer)}</span>
                       <span className="text-green-700 font-medium ml-2 shrink-0 tabular-nums">
                         {f.allocated}×
                         {f.allocated < f.order.pending && (
@@ -569,20 +1460,11 @@ function BuyModal({
                 <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto pr-0.5">
                   {preview.unfilled.map((o) => (
                     <div key={o.id} className="flex items-center justify-between px-2 py-1 rounded-md bg-gray-50">
-                      <span className="text-gray-500 truncate">{o.customer}</span>
+                      <span className="text-gray-500 truncate">{displayIg(o.customer)}</span>
                       <span className="text-gray-400 font-medium ml-2 shrink-0 tabular-nums">{o.pending}×</span>
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
-
-            {preview.excessUnits > 0 && (
-              <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-amber-50 border border-amber-200">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-600 shrink-0">
-                  <path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                </svg>
-                <span className="text-amber-700 font-medium">{preview.excessUnits} excess units → will be added to Excess Purchase</span>
               </div>
             )}
           </div>
@@ -602,10 +1484,10 @@ function BuyModal({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={saving || quantityBought < 1}
-            className="px-4 py-1.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
+            disabled={saving || quantity < 1}
+            className="px-4 py-1.5 rounded-lg text-white text-sm font-medium disabled:opacity-50 transition-colors bg-brand hover:bg-brand-hover"
           >
-            {saving ? "Saving…" : "Mark as Bought"}
+            {saving ? "Saving…" : "Apply excess"}
           </button>
         </div>
       </div>

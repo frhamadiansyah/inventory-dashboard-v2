@@ -6,7 +6,7 @@ export default function ShipPage() {
   return (
     <PageShell>
       <PageHeader
-        title="Ready to Ship"
+        title="Packing List"
         subtitle="Orders with arrived units that haven't been shipped yet"
       />
       <ShipClient />

@@ -63,69 +63,57 @@ export async function generateMultipleShippingLabels(labels: ShippingLabelParams
     doc.setFont("helvetica", "bold")
     doc.text(`${FROM_NAME}  ·  ${FROM_PHONE}`, x + 2, r3Y + 12)
 
-    // Row 4: packing list — hidden for now, re-enable by uncommenting
-    // const r4Y = r3Y + r3H + 1
-    // const lineH = 5
-    // const itemsStart = r4Y + 13  // baseline of first item line
-    //
-    // // Pre-wrap every item at the drawing font
-    // doc.setFontSize(10)
-    // doc.setFont("helvetica", "bold")
-    // const wrappedItems = packingLines.map(line => doc.splitTextToSize(line, contentW - 4))
-    // const allLines: string[] = wrappedItems.flat()
-    //
-    // // Split: how many lines fit on the remaining space of this page
-    // const maxLinesPage1 = Math.max(0, Math.floor((pageH - itemsStart) / lineH))
-    // const page1Lines = allLines.slice(0, maxLinesPage1)
-    // const overflowLines = allLines.slice(maxLinesPage1)
-    //
-    // // Box fills to page bottom when there's overflow, otherwise sized to content
-    // const r4H = overflowLines.length > 0
-    //   ? pageH - r4Y
-    //   : Math.max(12, 10 + allLines.length * lineH)
-    //
-    // doc.rect(x, r4Y, contentW, r4H)
-    // doc.setFontSize(11)
-    // doc.setFont("helvetica", "bold")
-    // doc.text("PACKING LIST :", x + 2, r4Y + 7)
-    // doc.setFontSize(8)
-    // let itemY = itemsStart
-    // for (const line of page1Lines) {
-    //   doc.text(line, x + 2, itemY)
-    //   itemY += lineH
-    // }
-    //
-    // // Continuation pages for overflow items
-    // if (overflowLines.length > 0) {
-    //   const contMargin = 2
-    //   const contHeaderH = 12
-    //   const contFirstItem = contMargin + contHeaderH + 1
-    //   const maxLinesPerCont = Math.floor((pageH - contFirstItem) / lineH)
-    //
-    //   let remaining = overflowLines
-    //   while (remaining.length > 0) {
-    //     doc.addPage([78, 100], "portrait")
-    //     const chunk = remaining.slice(0, maxLinesPerCont)
-    //     remaining = remaining.slice(maxLinesPerCont)
-    //
-    //     const boxH = contHeaderH + chunk.length * lineH
-    //     doc.rect(contMargin, contMargin, contentW, boxH)
-    //     doc.setFontSize(11)
-    //     doc.setFont("helvetica", "bold")
-    //     doc.text(`PACKING LIST (cont.) — ${shippingId}`, contMargin + 2, contMargin + 7)
-    //     doc.setFontSize(10)
-    //     let contY = contFirstItem
-    //     for (const line of chunk) {
-    //       doc.text(line, contMargin + 2, contY)
-    //       contY += lineH
-    //     }
-    //   }
-    // }
+  }
+
+  // Order list — a separate label-sized page (or more, if the items overflow)
+  // placed after each label, listing the customer's items. Skipped when there
+  // are no items (e.g. the Custom Label flow passes an empty list).
+  function drawOrderList({ event, customer, shippingId, packingLines }: ShippingLabelParams) {
+    const m = 4
+    const contentW = 78 - m * 2
+    const x = m
+    const lineH = 4.6
+    const bottom = 100 - m
+
+    doc.setFontSize(9)
+    doc.setFont("helvetica", "normal")
+    const wrapped: string[] = packingLines.flatMap((l) => doc.splitTextToSize(`• ${l}`, contentW))
+
+    let idx = 0
+    let cont = false
+    do {
+      doc.addPage([78, 100], "portrait")
+      let y = m + 5
+
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(11)
+      doc.text(cont ? "ORDER LIST (cont.)" : "ORDER LIST", x, y)
+      doc.setFontSize(14)
+      doc.text(shippingId, 78 - m, y, { align: "right" })
+
+      y += 5
+      doc.setFontSize(8)
+      const hdr = doc.splitTextToSize(`${event}  ${customer.toUpperCase()}`, contentW).slice(0, 2)
+      doc.text(hdr, x, y)
+      y += hdr.length * 3.5 + 1.5
+      doc.line(x, y, x + contentW, y)
+      y += 4
+
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(9)
+      while (idx < wrapped.length && y <= bottom) {
+        doc.text(wrapped[idx], x, y)
+        y += lineH
+        idx++
+      }
+      cont = true
+    } while (idx < wrapped.length)
   }
 
   for (let i = 0; i < labels.length; i++) {
     if (i > 0) doc.addPage([78, 100], "portrait")
     drawLabel(labels[i])
+    if (labels[i].packingLines.length > 0) drawOrderList(labels[i])
   }
 
   return doc.output("blob")

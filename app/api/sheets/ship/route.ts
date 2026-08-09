@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireRole } from "@/lib/api"
-import { getShipOrdersFiltered, shipCustomerOrders, type ShipSegment } from "@/lib/db"
+import { getShipOrdersFiltered, shipCustomerOrders, shipMergedCustomerOrders, type ShipSegment } from "@/lib/db"
 
 export async function GET(req: NextRequest) {
   const { session, error: authError } = await requireSession()
@@ -32,7 +32,11 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json()
-    const result = await shipCustomerOrders(body)
+    // A "Ship together" payload carries `groups` (one customer, several events);
+    // a single-event ship carries `event` + `orders`.
+    const result = Array.isArray(body?.groups)
+      ? await shipMergedCustomerOrders(body, session.user.email)
+      : await shipCustomerOrders(body, session.user.email)
     return NextResponse.json(result)
   } catch (err) {
     console.error("Failed to ship orders:", err)

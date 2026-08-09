@@ -44,9 +44,9 @@ export default function CustomLabelClient() {
   const canGenerate = Boolean(shippingId.trim()) && !generating
 
   return (
-    <div className="flex gap-6 items-start">
+    <div className="flex flex-col md:flex-row gap-6 md:items-start">
       {/* Form */}
-      <div className="w-72 shrink-0">
+      <div className="w-full md:w-72 md:shrink-0">
         <div className="rounded-xl border border-cream-border bg-white overflow-hidden">
           <div className="px-5 py-4 border-b border-cream-border bg-cream">
             <p className="text-xs text-gray-500">

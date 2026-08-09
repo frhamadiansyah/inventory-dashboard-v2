@@ -1,22 +1,28 @@
 import { NextRequest, NextResponse } from "next/server"
-import { requireSession, requireRole } from "@/lib/api"
-import { getDuplicateFormRows, bulkUpdatePurchase, appendExcessPurchase } from "@/lib/db"
+import { requireSession, requireOwner } from "@/lib/api"
+import { getDuplicateFormRowsForEvent, bulkUpdatePurchase, appendExcessPurchase, withActor, fetchPaidStatusMap, PAID_PRIORITY_RANK, type PaidStatus } from "@/lib/db"
 
 type ItemLine = { item: string; qty: number }
 type UpdatedRow = { rowNumber: number; customer: string; oldUnitBuy: number; unitBuy: number }
-type FormRows = Awaited<ReturnType<typeof getDuplicateFormRows>>
+type FormRows = Awaited<ReturnType<typeof getDuplicateFormRowsForEvent>>
 
-/** Build a map of item name → eligible rows (sorted chronologically) for a given event. */
-function buildEligibleMap(rows: FormRows, event: string): Map<string, FormRows> {
+/**
+ * Build a map of item name → eligible rows, ordered by allocation priority:
+ * paid → partial → unpaid (customers who've committed money are bought first),
+ * then earliest order within a tier. Mirrors getShoppingList / markProductBought.
+ */
+function buildEligibleMap(rows: FormRows, event: string, statusMap: Map<string, PaidStatus>): Map<string, FormRows> {
+  const rank = (customer: string) => PAID_PRIORITY_RANK[statusMap.get(`${event}|${customer}`) ?? "unpaid"]
   const map = new Map<string, FormRows>()
   for (const r of rows) {
-    if (r.event !== event) continue
     if ((r.unitBuy ?? 0) >= r.unit) continue
     const group = map.get(r.items)
     if (group) group.push(r)
     else map.set(r.items, [r])
   }
-  for (const group of map.values()) group.sort((a, b) => a.rowNumber - b.rowNumber)
+  for (const group of map.values()) {
+    group.sort((a, b) => rank(a.customer) - rank(b.customer) || a.rowNumber - b.rowNumber)
+  }
   return map
 }
 
@@ -64,7 +70,7 @@ export async function POST(req: NextRequest) {
   const { session, error: authError } = await requireSession()
   if (authError) return authError
 
-  const roleError = requireRole(session)
+  const roleError = requireOwner(session)
   if (roleError) return roleError
 
   try {
@@ -87,13 +93,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const rows = await getDuplicateFormRows()
+    const [rows, statusMap] = await Promise.all([
+      getDuplicateFormRowsForEvent(event),
+      fetchPaidStatusMap([event]),
+    ])
     const receiptStr = receipt ? String(receipt) : ""
-    const eligibleMap = buildEligibleMap(rows, event)
+    const eligibleMap = buildEligibleMap(rows, event, statusMap)
 
     const allUpdates: (UpdatedRow & { receipt: string })[] = []
     const results: { item: string; rows: UpdatedRow[]; excess: number }[] = []
-    const excessRows: { event: string; items: string; unitBuy: number; receipt: string }[] = []
+    const excessRows: { event: string; items: string; unitBuy: number; receipt: string; unitDispatch: null; unitArrive: null }[] = []
 
     for (const line of items) {
       const eligible = eligibleMap.get(line.item) ?? []
@@ -101,15 +110,20 @@ export async function POST(req: NextRequest) {
       allUpdates.push(...updates)
       results.push(itemResult)
       if (itemResult.excess > 0) {
-        excessRows.push({ event, items: line.item, unitBuy: itemResult.excess, receipt: receiptStr })
+        // Bought more than any pending order needed — nothing dispatched or
+        // arrived yet, so this must NOT default to appendExcessPurchase's
+        // usual "fully arrived" (that default is for callers logging stock
+        // already physically in hand, which this isn't).
+        excessRows.push({ event, items: line.item, unitBuy: itemResult.excess, receipt: receiptStr, unitDispatch: null, unitArrive: null })
       }
     }
 
     await Promise.all([
-      bulkUpdatePurchase(
+      withActor(session.user.email, (tx) => bulkUpdatePurchase(
         allUpdates.map(({ rowNumber, unitBuy, receipt: r }) => ({ rowNumber, unitBuy, receipt: r })),
-      ),
-      appendExcessPurchase(excessRows),
+        tx,
+      )),
+      withActor(session.user.email, (tx) => appendExcessPurchase(excessRows, tx)),
     ])
 
     return NextResponse.json({ results })

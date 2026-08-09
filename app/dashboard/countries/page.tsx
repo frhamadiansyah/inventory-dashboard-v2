@@ -6,7 +6,7 @@ export default function CountriesPage() {
   return (
     <PageShell>
       <PageHeader
-        title="Countries"
+        title="Currencies"
         subtitle="Manage currency exchange rates and cargo costs"
       />
       <CountriesClient />

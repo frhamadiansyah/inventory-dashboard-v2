@@ -23,9 +23,13 @@ export async function GET(req: NextRequest) {
         event: params.get("event") ?? undefined,
         customer: params.get("customer") ?? undefined,
         items: params.get("items") ?? undefined,
+        note: params.get("note") ?? undefined,
+        dateFrom: params.get("dateFrom") ?? undefined,
+        dateTo: params.get("dateTo") ?? undefined,
         sortKey: params.get("sortKey") ?? undefined,
         sortDir: (params.get("sortDir") as "asc" | "desc") ?? undefined,
         newestFirst: params.get("newestFirst") === "true",
+        skipCount: params.get("skipCount") === "true",
       })
       return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } })
     }

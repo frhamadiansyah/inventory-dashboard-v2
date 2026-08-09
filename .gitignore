@@ -24,6 +24,9 @@
 .DS_Store
 *.pem
 .claude/
+.continue/
+.agents/
+skills-lock.json
 
 # debug
 npm-debug.log*
@@ -39,6 +42,16 @@ yarn-error.log*
 
 # netlify
 .netlify
+
+# supabase
+supabase/.temp/
+
+# one-off migration artifacts — contain customer PII / bank data, never commit
+data.sql
+migration-report-*.csv
+
+# reference-data imports (bulky, re-importable from source) — e.g. JNE rates CSV
+scripts/data/
 
 # typescript
 *.tsbuildinfo

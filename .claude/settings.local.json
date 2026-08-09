@@ -18,7 +18,11 @@
       "Bash(git commit -m ' *)",
       "Read(//Users/frhamadiansyah/Documents/Projects/Yubisayu/inventory-dashboard-v2/**)",
       "Bash(npx tsx *)",
-      "Bash(git -C /Users/frhamadiansyah/Documents/Projects/Yubisayu/inventory-dashboard-v2 merge claude/serene-elion-518195 --no-edit)"
+      "Bash(git -C /Users/frhamadiansyah/Documents/Projects/Yubisayu/inventory-dashboard-v2 merge claude/serene-elion-518195 --no-edit)",
+      "WebSearch",
+      "WebFetch(domain:neon.com)",
+      "WebFetch(domain:supabase.com)",
+      "mcp__Claude_Preview__preview_start"
     ]
   }
 }

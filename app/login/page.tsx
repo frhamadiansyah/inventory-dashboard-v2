@@ -1,15 +1,11 @@
 import { auth, signIn } from "@/auth"
 import { redirect } from "next/navigation"
 
-export default async function LoginPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ error?: string }>
-}) {
+export default async function LoginPage() {
   const session = await auth()
-  if (session) redirect("/dashboard")
-
-  const { error } = await searchParams
+  if (session?.user?.role) redirect("/dashboard")
+  // Signed in but no recognized role → dedicated unauthorized page.
+  if (session) redirect("/unauthorized")
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-cream">
@@ -27,12 +23,6 @@ export default async function LoginPage({
 
         <h1 className="text-lg font-semibold text-foreground mb-1">Welcome back</h1>
         <p className="text-sm text-gray-500 mb-6">Sign in with your Google account to continue</p>
-
-        {error === "unauthorized" && (
-          <p className="text-sm text-brand bg-brand-light border border-brand/20 rounded-lg px-4 py-2 mb-4">
-            Your account is not authorized to access this dashboard.
-          </p>
-        )}
 
         <form
           action={async () => {

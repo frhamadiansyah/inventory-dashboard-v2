@@ -1,5 +1,6 @@
 import { auth } from "@/auth"
 import { NextResponse } from "next/server"
+import { canAccessRoute, ADMIN_HOME } from "@/lib/access"
 
 export default auth((req) => {
   const { pathname } = req.nextUrl
@@ -10,14 +11,16 @@ export default auth((req) => {
     return NextResponse.redirect(new URL("/login", req.url))
   }
 
-  // Logged in but no recognized role → send to login (unauthorized)
+  // Logged in but no recognized role → show the dedicated unauthorized page.
+  // (/unauthorized is not matched by this middleware, so this cannot loop.)
   if (!role) {
-    return NextResponse.redirect(new URL("/login?error=unauthorized", req.url))
+    return NextResponse.redirect(new URL("/unauthorized", req.url))
   }
 
-  // Owner-only routes: only "owner" role allowed
-  if (pathname.startsWith("/dashboard/products") && role !== "owner") {
-    return NextResponse.redirect(new URL("/dashboard", req.url))
+  // Admins are restricted to a fixed set of routes; owners can access everything.
+  // ADMIN_HOME is itself an admin route, so this never loops.
+  if (!canAccessRoute(role, pathname)) {
+    return NextResponse.redirect(new URL(ADMIN_HOME, req.url))
   }
 })
 

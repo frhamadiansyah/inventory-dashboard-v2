@@ -30,3 +30,8 @@ export function requireOwner(session: Session): NextResponse | null {
   }
   return null
 }
+
+/** True when the session user is an admin (restricted role). */
+export function isAdmin(session: Session): boolean {
+  return session.user.role === "admin"
+}
