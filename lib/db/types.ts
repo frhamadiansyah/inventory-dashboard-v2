@@ -76,6 +76,11 @@ export interface ExcessRow {
   expectedItem: string
   createdAt: string
   updatedAt: string
+  // Null means "not yet at this stage" — same convention as orders.unit_dispatch
+  // / orders.unit_arrive. Set on every insert path; never left ambiguous by omission.
+  unitDispatch: number | null
+  unitArrive: number | null
+  dispatchReceipt: string
   /** Item's sell price, joined by name from products — only populated by the
    *  paginated fetch (for display); undefined elsewhere. */
   price?: number | null
@@ -96,6 +101,33 @@ export interface DispatchUpdate {
   rowNumber: number
   unitDispatch: number
   dispatchReceipt: string
+}
+
+export interface ExcessDispatchUpdate {
+  rowNumber: number
+  unitDispatch: number
+  dispatchReceipt: string
+}
+
+export interface ExcessArriveUpdate {
+  rowNumber: number
+  unitArrive: number
+}
+
+/** One excess_purchase row still moving through buy -> dispatch -> arrive, for
+ *  the "Overbuy in transit" section on the Dispatch List / Receiving List
+ *  pages. `pending` is stage-specific: unitBuy - unitDispatch when sourced from
+ *  getExcessDispatchPending, unitDispatch - unitArrive from getExcessArrivalPending. */
+export interface ExcessTransitItem {
+  rowNumber: number
+  event: string
+  items: string
+  reason: ExcessReason
+  unitBuy: number
+  unitDispatch: number
+  unitArrive: number
+  pending: number
+  receipt: string
 }
 
 export interface InvoiceOrderLine {
