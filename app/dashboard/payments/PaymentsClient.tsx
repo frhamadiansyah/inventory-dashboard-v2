@@ -99,9 +99,9 @@ export default function PaymentsClient({ role }: { role: Role | null }) {
   const filterRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!filterOpen) return
-    const h = (e: MouseEvent) => { if (!filterRef.current?.contains(e.target as Node)) setFilterOpen(false) }
-    document.addEventListener("mousedown", h)
-    return () => document.removeEventListener("mousedown", h)
+    const h = (e: PointerEvent) => { if (!filterRef.current?.contains(e.target as Node)) setFilterOpen(false) }
+    document.addEventListener("pointerdown", h)
+    return () => document.removeEventListener("pointerdown", h)
   }, [filterOpen])
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: PAGE_SIZE })
 
@@ -502,21 +502,27 @@ export default function PaymentsClient({ role }: { role: Role | null }) {
               <div className="absolute right-0 top-full mt-1 z-30 w-52 rounded-lg border border-cream-border bg-white shadow-lg p-3 flex flex-col gap-3">
                 <label className="flex flex-col gap-1">
                   <span className="text-xs font-medium text-gray-500">Status</span>
-                  <SearchableSelect
+                  <select
                     value={checkedFilter}
-                    onChange={(v) => handleCheckedFilterChange(v as CheckedFilter)}
-                    options={CHECKED_FILTER_OPTIONS}
-                    searchable={false}
-                  />
+                    onChange={(e) => handleCheckedFilterChange(e.target.value as CheckedFilter)}
+                    className="w-full border border-cream-border rounded-lg px-2 py-2 text-sm text-gray-600 bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
+                  >
+                    {CHECKED_FILTER_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
                 </label>
                 <label className="flex flex-col gap-1">
                   <span className="text-xs font-medium text-gray-500">Type</span>
-                  <SearchableSelect
+                  <select
                     value={kindFilter}
-                    onChange={(v) => handleKindFilterChange(v as KindFilter)}
-                    options={KIND_FILTER_OPTIONS}
-                    searchable={false}
-                  />
+                    onChange={(e) => handleKindFilterChange(e.target.value as KindFilter)}
+                    className="w-full border border-cream-border rounded-lg px-2 py-2 text-sm text-gray-600 bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
+                  >
+                    {KIND_FILTER_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
                 </label>
               </div>
             )}
