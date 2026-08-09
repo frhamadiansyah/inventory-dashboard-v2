@@ -76,8 +76,8 @@ export async function updateBusinessProfile(data: BusinessProfile, db: DBExecuto
 // id always 1. See lib/product-defaults.ts and
 // app/api/sheets/product-defaults/route.ts.
 
-export async function getProductDefaults(): Promise<ProductDefaults> {
-  const [row] = await sql`
+export async function getProductDefaults(db: DBExecutor = sql): Promise<ProductDefaults> {
+  const [row] = await db`
     SELECT profit_pct, operational_fee, packing_fee, markup_pct, tier_kurs_round_to,
            profit_margin_round_to, flat_fee, flat_fee_pct, flat_fee_min, default_country_id,
            default_pricing_method, dp_percent

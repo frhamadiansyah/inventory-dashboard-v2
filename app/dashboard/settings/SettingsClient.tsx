@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import {
   TEMPLATE_KEYS,
   REQUIRED_TOKENS,
@@ -12,10 +12,17 @@ import {
 } from "@/lib/message-templates"
 import { DEFAULT_BUSINESS_PROFILE, type BusinessProfile } from "@/lib/business-profile"
 import { DEFAULT_PRODUCT_DEFAULTS, type ProductDefaults } from "@/lib/product-defaults"
-import { PRICING_METHODS, PRICING_METHOD_LABEL, toPricingMethod } from "@/lib/pricing"
+import {
+  PRICING_METHODS, PRICING_METHOD_LABEL, toPricingMethod,
+  calcRupiahFeePrice, flatFeeAmount, flatFeeFloorApplies, ceilTo,
+} from "@/lib/pricing"
 import type { CountryRow } from "@/lib/db"
 import KursTiersSection from "./KursTiersSection"
 import TierFeeBracketsSection from "./TierFeeBracketsSection"
+import MoneyInput from "@/components/MoneyInput"
+import InfoTooltip from "@/components/InfoTooltip"
+
+const fmt = (n: number) => n.toLocaleString("id-ID")
 
 const TEMPLATE_LABELS: Record<TemplateKey, string> = {
   invoice: "Invoice message",
@@ -151,43 +158,6 @@ export default function SettingsClient() {
 }
 
 const fieldInputCls = "w-full border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
-
-// Click/tap-to-toggle rather than hover-only, so it works the same on touch as on desktop.
-function InfoTooltip({ text }: { text: string }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    function onPointerDown(e: PointerEvent) {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener("pointerdown", onPointerDown)
-    return () => document.removeEventListener("pointerdown", onPointerDown)
-  }, [open])
-
-  return (
-    <div className="relative inline-block" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-label="More info"
-        className="flex items-center justify-center w-4 h-4 rounded-full text-gray-400 hover:text-brand transition-colors"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="10" />
-          <line x1="12" y1="16" x2="12" y2="12" />
-          <line x1="12" y1="8" x2="12.01" y2="8" />
-        </svg>
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-20 w-56 rounded-lg border border-cream-border bg-white shadow-lg p-2.5 text-[10px] text-gray-500 leading-relaxed">
-          {text}
-        </div>
-      )}
-    </div>
-  )
-}
 
 function BusinessProfileSection() {
   const [profile, setProfile] = useState<BusinessProfile | null>(null)
@@ -335,13 +305,17 @@ function BusinessProfileSection() {
   )
 }
 
+/**
+ * Fetches the one product_defaults row and hands it to three independently-saved
+ * cards (General/Profit Margin/Markup Flat — Kurs Tiers rounding is a fourth,
+ * elsewhere). Each card PATCHes only the fields it owns (see the route), so
+ * saving one can no longer clobber another's unsaved edits or a value changed
+ * from a different card since this page loaded.
+ */
 function ProductDefaultsSection() {
   const [defaults, setDefaults] = useState<ProductDefaults | null>(null)
   const [countries, setCountries] = useState<CountryRow[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
 
   // Only for the Default country select's options. A failure here is not surfaced: the rest of
   // the card is still usable, and the select falls back to showing IDR plus whatever id is
@@ -363,6 +337,32 @@ function ProductDefaultsSection() {
       .catch(() => setLoadError("Failed to load product defaults"))
   }, [])
 
+  return (
+    <>
+      <GeneralCard defaults={defaults} setDefaults={setDefaults} loadError={loadError} countries={countries} />
+      <ProfitMarginCard defaults={defaults} setDefaults={setDefaults} loadError={loadError} />
+      <MarkupFlatCard defaults={defaults} setDefaults={setDefaults} loadError={loadError} />
+    </>
+  )
+}
+
+type ProductDefaultsCardProps = {
+  defaults: ProductDefaults | null
+  setDefaults: React.Dispatch<React.SetStateAction<ProductDefaults | null>>
+  loadError: string | null
+}
+
+/** Saved/saving/error state, and the PATCH, scoped to exactly the fields in `keys` — the
+ *  shape every card below shares, so a save can only ever touch its own card's columns. */
+function useCardSave(
+  defaults: ProductDefaults | null,
+  setDefaults: React.Dispatch<React.SetStateAction<ProductDefaults | null>>,
+  keys: readonly (keyof ProductDefaults)[],
+) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
   useEffect(() => {
     if (!saved) return
     const t = setTimeout(() => setSaved(false), 2000)
@@ -374,10 +374,11 @@ function ProductDefaultsSection() {
     setSaving(true)
     setError(null)
     try {
+      const body = Object.fromEntries(keys.map((k) => [k, defaults[k]]))
       const res = await fetch("/api/sheets/product-defaults", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(defaults),
+        body: JSON.stringify(body),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? "Failed to save")
@@ -389,9 +390,60 @@ function ProductDefaultsSection() {
     }
   }
 
+  // Only this card's fields reset — the others keep whatever is on screen, saved or not.
   function handleReset() {
-    setDefaults(DEFAULT_PRODUCT_DEFAULTS)
+    setDefaults((d) => (d ? { ...d, ...Object.fromEntries(keys.map((k) => [k, DEFAULT_PRODUCT_DEFAULTS[k]])) } : d))
   }
+
+  return { saving, error, saved, handleSave, handleReset }
+}
+
+function CardHeader({
+  title, saved, saving, onSave, onReset, canSave,
+}: {
+  title: string
+  saved: boolean
+  saving: boolean
+  onSave: () => void
+  onReset: () => void
+  canSave: boolean
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 flex-wrap">
+      <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+      <div className="flex items-center gap-3">
+        {saved && <span className="text-xs text-green-600">Saved</span>}
+        <button
+          type="button"
+          onClick={onReset}
+          title="Reset to default"
+          aria-label="Reset to default"
+          className="inline-flex items-center justify-center h-[30px] w-[30px] rounded-lg border border-cream-border text-gray-500 hover:border-brand hover:text-brand transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="1 4 1 10 7 10" />
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving || !canSave}
+          className="text-xs font-medium px-3 py-1.5 rounded-lg bg-brand text-white hover:bg-brand-light transition-colors disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const GENERAL_KEYS = [
+  "operationalFee", "packingFee", "markupPct", "dpPercent", "defaultPricingMethod", "defaultCountryId",
+] as const satisfies readonly (keyof ProductDefaults)[]
+
+function GeneralCard({ defaults, setDefaults, loadError, countries }: ProductDefaultsCardProps & { countries: CountryRow[] }) {
+  const { saving, error, saved, handleSave, handleReset } = useCardSave(defaults, setDefaults, GENERAL_KEYS)
 
   function field(key: keyof ProductDefaults, value: string) {
     setDefaults((d) => (d ? { ...d, [key]: Number(value) || 0 } : d))
@@ -408,46 +460,9 @@ function ProductDefaultsSection() {
     setDefaults((d) => (d ? { ...d, defaultPricingMethod: toPricingMethod(value) } : d))
   }
 
-  const saveButton = (
-    <button
-      type="button"
-      onClick={handleSave}
-      disabled={saving || !defaults}
-      className="text-xs font-medium px-3 py-1.5 rounded-lg bg-brand text-white hover:bg-brand-light transition-colors disabled:opacity-50"
-    >
-      {saving ? "Saving…" : "Save"}
-    </button>
-  )
-
-  // Shared across all three cards: they're one product_defaults record behind one Save, so
-  // Reset here restores DEFAULT_PRODUCT_DEFAULTS for the whole thing, not just the card it's
-  // clicked from.
-  const resetButton = (
-    <button
-      type="button"
-      onClick={handleReset}
-      title="Reset to default"
-      aria-label="Reset to default"
-      className="inline-flex items-center justify-center h-[30px] w-[30px] rounded-lg border border-cream-border text-gray-500 hover:border-brand hover:text-brand transition-colors"
-    >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="1 4 1 10 7 10" />
-        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
-      </svg>
-    </button>
-  )
-
   return (
-    <>
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <h2 className="text-sm font-semibold text-foreground">General</h2>
-        <div className="flex items-center gap-3">
-          {saved && <span className="text-xs text-green-600">Saved</span>}
-          {resetButton}
-          {saveButton}
-        </div>
-      </div>
+      <CardHeader title="General" saved={saved} saving={saving} onSave={handleSave} onReset={handleReset} canSave={!!defaults} />
 
       {loadError && <p className="text-xs text-red-600">{loadError}</p>}
       {error && <p className="text-xs text-red-600">{error}</p>}
@@ -538,30 +553,56 @@ function ProductDefaultsSection() {
         </div>
       )}
     </div>
+  )
+}
 
-    {/* Profit Margin's one setting. Ahead of Markup Flat because the per-method cards run in
-        PRICING_METHODS order, and `overseas` is first.
+const PROFIT_MARGIN_KEYS = [
+  "profitPct", "profitMarginRoundTo",
+] as const satisfies readonly (keyof ProductDefaults)[]
 
-        Unlike the Markup Flat figures below, this one IS a pre-fill: every Profit Margin
-        product stores its own profit_pct, and the server prices from the row's copy, so
-        changing this moves nothing that already exists. */}
+// Ahead of Markup Flat because the per-method cards run in PRICING_METHODS order, and
+// `overseas` is first.
+//
+// Unlike the Markup Flat figures below, Profit % IS a pre-fill: every Profit Margin
+// product stores its own profit_pct, and the server prices from the row's copy, so
+// changing this moves nothing that already exists.
+function ProfitMarginCard({ defaults, setDefaults, loadError }: ProductDefaultsCardProps) {
+  const { saving, error, saved, handleSave, handleReset } = useCardSave(defaults, setDefaults, PROFIT_MARGIN_KEYS)
+  const [tryBaseProfit, setTryBaseProfit] = useState("300000")
+
+  function field(key: keyof ProductDefaults, value: string) {
+    setDefaults((d) => (d ? { ...d, [key]: Number(value) || 0 } : d))
+  }
+
+  // Same formula calcAbroadPrice runs server-side, minus the valas→cost conversion: this
+  // box's typed number IS the cost, the same simplification Markup Tier/Flat's preview
+  // makes. Operational/packing fees come from the General card, also part of `defaults`.
+  // Broken into the same steps the formula actually takes, so the box explains the
+  // arithmetic instead of just the result.
+  const previewProfitBase = Number(tryBaseProfit) || 0
+  const previewDivided =
+    defaults && defaults.profitPct < 100
+      ? (previewProfitBase * 100) / (100 - defaults.profitPct)
+      : 0
+  const previewRawTotal = defaults ? previewDivided + defaults.operationalFee + defaults.packingFee : 0
+  const previewProfitPrice =
+    !defaults || defaults.profitPct >= 100 ? 0 : ceilTo(previewRawTotal, defaults.profitMarginRoundTo)
+
+  return (
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <h2 className="text-sm font-semibold text-foreground">Profit Margin</h2>
-        <div className="flex items-center gap-3">
-          {saved && <span className="text-xs text-green-600">Saved</span>}
-          {resetButton}
-          {saveButton}
-        </div>
-      </div>
+      <CardHeader title="Profit Margin" saved={saved} saving={saving} onSave={handleSave} onReset={handleReset} canSave={!!defaults} />
 
-      <p className="text-[10px] text-gray-400">
+      <p className="text-xs text-gray-500">
         Price is cost ÷ (1 − Profit %), plus the operational and packing fees, rounded up to
         the step below.
       </p>
 
+      {loadError && <p className="text-xs text-red-600">{loadError}</p>}
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      {!defaults && !loadError && <p className="text-xs text-gray-500">Loading…</p>}
+
       {defaults && (
-        <div className="grid md:grid-cols-3 gap-3">
+        <div className="grid md:grid-cols-4 gap-3">
           <label className="flex flex-col gap-1">
             <div className="flex items-center gap-1">
               <span className="text-xs text-gray-500">Profit %</span>
@@ -590,79 +631,193 @@ function ProductDefaultsSection() {
               className={fieldInputCls}
             />
           </label>
+          {/* Read-only: these two belong to the General card and feed this formula, but
+              editing them here would mean two Saves owning the same field. Shown so the
+              breakdown below is self-contained instead of sending the owner to scroll up. */}
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Operational fee</span>
+            <div
+              title="Set in the General card above"
+              className={`${fieldInputCls} bg-gray-50 text-gray-400 cursor-not-allowed`}
+            >
+              {defaults.operationalFee}
+            </div>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Packing fee</span>
+            <div
+              title="Set in the General card above"
+              className={`${fieldInputCls} bg-gray-50 text-gray-400 cursor-not-allowed`}
+            >
+              {defaults.packingFee}
+            </div>
+          </label>
+
+          <div className="col-span-4 rounded-lg bg-gray-50 border border-cream-border px-3 py-2 flex flex-col gap-1.5">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-medium text-gray-500">Try a base cost</span>
+              <MoneyInput value={tryBaseProfit} onChange={setTryBaseProfit} name="try-base-profit-margin" wrapClassName="w-32 shrink-0" />
+            </div>
+            {defaults.profitPct >= 100 ? (
+              <p className="text-xs text-amber-700 tabular-nums">
+                Profit % is 100 or more — nothing to divide into, so the price computes as
+                Rp 0.
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-gray-400 tabular-nums">
+                  Rp {fmt(previewProfitBase)} ÷ (1 − {fmt(defaults.profitPct)}%) = Rp {fmt(previewDivided)}
+                </p>
+                <p className="text-xs text-gray-500 tabular-nums">
+                  + Rp {fmt(defaults.operationalFee)} operational + Rp {fmt(defaults.packingFee)} packing
+                  {` = Rp ${fmt(previewRawTotal)}, rounded up to ${fmt(defaults.profitMarginRoundTo)}`}
+                </p>
+              </>
+            )}
+            <p className="text-xs text-gray-500 tabular-nums">
+              price <span className="font-semibold text-foreground">Rp {fmt(previewProfitPrice)}</span>
+              {" · cost Rp "}{fmt(previewProfitBase)}
+              {" · profit "}
+              <span className={previewProfitPrice - previewProfitBase >= 0 ? "text-green-700" : "text-red-600"}>
+                Rp {fmt(previewProfitPrice - previewProfitBase)}
+              </span>
+            </p>
+            {defaults.profitPct < 100 && previewProfitPrice !== Math.round(previewRawTotal) && (
+              <p className="text-[10px] text-gray-400 tabular-nums">
+                The rounding added Rp {fmt(previewProfitPrice - Math.round(previewRawTotal))} on top of the
+                margin and fees.
+              </p>
+            )}
+          </div>
         </div>
       )}
     </div>
+  )
+}
 
-    {/* The three figures behind Markup's Flat toggle. Their own card because they are not
-        form pre-fills like the rest of Product defaults: the SERVER re-reads all three
-        inside the write transaction, so they are the authority over what a Flat Fee product
-        is priced at — the same distinction Tier Kurs rounding carries, one card up.
+const MARKUP_FLAT_KEYS = [
+  "flatFee", "flatFeePct", "flatFeeMin",
+] as const satisfies readonly (keyof ProductDefaults)[]
 
-        Same `defaults` state and the same PATCH, so Save/Reset here act on the whole record,
-        same as the other two cards — all three buttons are one shared action. */}
+// The three figures behind Markup's Flat toggle. Their own card because they are not form
+// pre-fills like the rest of Product defaults: the SERVER re-reads all three inside the
+// write transaction, so they are the authority over what a Flat Fee product is priced at
+// — the same distinction Tier Kurs rounding carries, one card up.
+function MarkupFlatCard({ defaults, setDefaults, loadError }: ProductDefaultsCardProps) {
+  const { saving, error, saved, handleSave, handleReset } = useCardSave(defaults, setDefaults, MARKUP_FLAT_KEYS)
+  // Independent per box: fixed mode's fee doesn't depend on base cost, so there's nothing to
+  // vary there other than seeing base + a constant; percent mode is the one worth trying
+  // different base costs against, to see where the minimum floor kicks in.
+  const [tryBaseFlat, setTryBaseFlat] = useState("300000")
+  const [tryBasePct, setTryBasePct] = useState("300000")
+
+  function field(key: keyof ProductDefaults, value: string) {
+    setDefaults((d) => (d ? { ...d, [key]: Number(value) || 0 } : d))
+  }
+
+  const previewFlatBase = Number(tryBaseFlat) || 0
+  const previewFlatFee = defaults?.flatFee ?? 0
+  const previewFlatPrice = calcRupiahFeePrice(previewFlatBase, previewFlatFee)
+
+  const previewPctBase = Number(tryBasePct) || 0
+  const previewPctFee = defaults
+    ? flatFeeAmount("percent", previewPctBase, defaults.flatFee, defaults.flatFeePct, defaults.flatFeeMin)
+    : 0
+  const previewPctFloored = defaults
+    ? flatFeeFloorApplies("percent", previewPctBase, defaults.flatFeePct, defaults.flatFeeMin)
+    : false
+  const previewPctPrice = calcRupiahFeePrice(previewPctBase, previewPctFee)
+
+  return (
     <div className="bg-white border border-cream-border rounded-xl p-4 flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <h2 className="text-sm font-semibold text-foreground">Markup Flat</h2>
-        <div className="flex items-center gap-3">
-          {saved && <span className="text-xs text-green-600">Saved</span>}
-          {resetButton}
-          {saveButton}
-        </div>
-      </div>
+      <CardHeader title="Markup Flat" saved={saved} saving={saving} onSave={handleSave} onReset={handleReset} canSave={!!defaults} />
 
-      <p className="text-[10px] text-gray-400">
+      <p className="text-xs text-gray-500">
         What a Flat Fee product earns — the Flat side of Markup&apos;s Tier | Flat toggle.
         Read when a product is saved, so every Flat Fee product uses the same figures.
       </p>
 
+      {loadError && <p className="text-xs text-red-600">{loadError}</p>}
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      {!defaults && !loadError && <p className="text-xs text-gray-500">Loading…</p>}
+
       {defaults && (
-        <div className="grid md:grid-cols-3 gap-3">
-          <label className="flex flex-col gap-1">
-            <div className="flex items-center gap-1">
-              <span className="text-xs text-gray-500">Flat Fee</span>
-              <InfoTooltip text="Every Flat Fee product is priced base cost + this. Applies on a product's next save." />
+        <div className="grid md:grid-cols-2 gap-3">
+          <div className="border border-cream-border rounded-lg p-3 flex flex-col gap-3">
+            <label className="flex flex-col gap-1">
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-gray-500">Flat Fee</span>
+                <InfoTooltip text="Every Flat Fee product is priced base cost + this. Applies on a product's next save." />
+              </div>
+              <input
+                type="number"
+                min="0"
+                value={defaults.flatFee}
+                onChange={(e) => field("flatFee", e.target.value)}
+                className={fieldInputCls}
+              />
+            </label>
+
+            <div className="rounded-lg bg-gray-50 border border-cream-border px-3 py-2 flex flex-col gap-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-medium text-gray-500">Try a base cost</span>
+                <MoneyInput value={tryBaseFlat} onChange={setTryBaseFlat} name="try-base-flat-fee" wrapClassName="w-32 shrink-0" />
+              </div>
+              <p className="text-xs text-gray-500 tabular-nums">
+                fee <span className="font-semibold text-foreground">Rp {fmt(previewFlatFee)}</span>
+                {" → price "}
+                <span className="font-semibold text-foreground">Rp {fmt(previewFlatPrice)}</span>
+              </p>
             </div>
-            <input
-              type="number"
-              min="0"
-              value={defaults.flatFee}
-              onChange={(e) => field("flatFee", e.target.value)}
-              className={fieldInputCls}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <div className="flex items-center gap-1">
-              <span className="text-xs text-gray-500">Flat Fee %</span>
-              <InfoTooltip text="Used instead of the amount above by Flat Fee products with Percent switched on. Applies on a product's next save." />
+          </div>
+          <div className="border border-cream-border rounded-lg p-3 grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-gray-500">Flat Percentage</span>
+                <InfoTooltip text="Used instead of the amount above by Flat Fee products with Percent switched on. Applies on a product's next save." />
+              </div>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={defaults.flatFeePct}
+                onChange={(e) => field("flatFeePct", e.target.value)}
+                className={fieldInputCls}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-gray-500">Minimum fee</span>
+                <InfoTooltip text="Floor under the percentage above, for when a small base would earn less than the work costs. 0 = no floor. Percent mode only." />
+              </div>
+              <input
+                type="number"
+                min="0"
+                value={defaults.flatFeeMin}
+                onChange={(e) => field("flatFeeMin", e.target.value)}
+                className={fieldInputCls}
+              />
+            </label>
+
+            <div className="col-span-2 rounded-lg bg-gray-50 border border-cream-border px-3 py-2 flex flex-col gap-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-medium text-gray-500">Try a base cost</span>
+                <MoneyInput value={tryBasePct} onChange={setTryBasePct} name="try-base-flat-pct" wrapClassName="w-32 shrink-0" />
+              </div>
+              <p className="text-xs text-gray-500 tabular-nums">
+                {fmt(defaults.flatFeePct)}% = Rp {fmt(previewPctFee)}
+                {previewPctFloored && " (floored)"}
+                {" — fee "}
+                <span className="font-semibold text-foreground">Rp {fmt(previewPctFee)}</span>
+                {" → price "}
+                <span className="font-semibold text-foreground">Rp {fmt(previewPctPrice)}</span>
+              </p>
             </div>
-            <input
-              type="number"
-              min="0"
-              max="100"
-              step="0.01"
-              value={defaults.flatFeePct}
-              onChange={(e) => field("flatFeePct", e.target.value)}
-              className={fieldInputCls}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <div className="flex items-center gap-1">
-              <span className="text-xs text-gray-500">Flat Fee minimum</span>
-              <InfoTooltip text="Floor under the percentage above, for when a small base would earn less than the work costs. 0 = no floor. Percent mode only." />
-            </div>
-            <input
-              type="number"
-              min="0"
-              value={defaults.flatFeeMin}
-              onChange={(e) => field("flatFeeMin", e.target.value)}
-              className={fieldInputCls}
-            />
-          </label>
+          </div>
         </div>
       )}
     </div>
-    </>
   )
 }
 

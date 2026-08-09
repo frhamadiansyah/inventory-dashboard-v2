@@ -22,6 +22,8 @@ import { resolveTieredKurs, tiersForCountry } from "@/lib/kurs-tiers"
 import { calcKursPrice, kursProfit } from "@/lib/pricing"
 import { useProductDefaults } from "@/hooks/useProductDefaults"
 import type { CountryRow, KursTierRow } from "@/lib/db"
+import InfoTooltip from "@/components/InfoTooltip"
+import MoneyInput from "@/components/MoneyInput"
 
 const inputCls =
   "border border-cream-border rounded-lg px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
@@ -94,7 +96,14 @@ export default function KursTiersSection() {
   const isConfigured = (c: CountryRow) =>
     Number(c.flatKurs) > 0 || tiersForCountry(tiers, c.id).length > 0
 
-  const visible = countries.filter((c) => isConfigured(c) || revealed.has(c.id))
+  // Already-configured countries keep their natural (countries) order; a country just
+  // revealed this session is appended after them, in the order it was added — not
+  // wherever it happens to sort naturally — so it lands at the end of the two-column
+  // grid (bottom-right) instead of jumping into the middle of the existing rows.
+  const revealedOrder = [...revealed]
+    .map((id) => countries.find((c) => c.id === id))
+    .filter((c): c is CountryRow => c != null && !isConfigured(c))
+  const visible = [...countries.filter(isConfigured), ...revealedOrder]
   const addable = countries.filter((c) => !isConfigured(c) && !revealed.has(c.id))
 
   function addCountry() {
@@ -139,8 +148,8 @@ export default function KursTiersSection() {
   const roundDirty = productDefaults != null && roundDraft != null
     && roundParsed !== productDefaults.tierKursRoundTo
 
-  // The endpoint validates every field of the record, so the whole object goes back with
-  // one figure changed — a partial body would be rejected, not merged.
+  // The endpoint merges a partial body over whatever is currently stored, so only this one
+  // figure goes back — the same reason the Settings cards each send just their own fields.
   async function saveRounding() {
     if (!productDefaults || !roundValid) return
     setRoundSaving(true)
@@ -149,7 +158,7 @@ export default function KursTiersSection() {
       const res = await fetch("/api/sheets/product-defaults", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...productDefaults, tierKursRoundTo: roundParsed }),
+        body: JSON.stringify({ tierKursRoundTo: roundParsed }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? "Failed to save")
@@ -173,13 +182,17 @@ export default function KursTiersSection() {
         bracket their valas falls into. A country can serve both — set either, or both.
         Highest matching minimum wins, and minimums are inclusive, so a &ldquo;1001 and
         up&rdquo; bracket starts at 1001. A country with no flat rate charges Flat Rate
-        products at cost.
+        products at cost. Brackets are read when a product is saved — changing them
+        doesn&apos;t reprice existing products, each one reprices the next time it is saved.
       </p>
 
       {/* Card-level, above the per-country list, because it is the one figure here that is
           not per country. */}
       <div className="flex flex-col gap-1 pb-3 border-b border-cream-border">
-        <label className="text-xs text-gray-500" htmlFor="rate-rounding">Rounding</label>
+        <div className="flex items-center gap-1">
+          <label className="text-xs text-gray-500" htmlFor="rate-rounding">Rounding</label>
+          <InfoTooltip text="Prices for both Rate methods round UP to this step. Shared with nothing else, and read when a product is saved — so changing it reprices each product on its next save, not now." />
+        </div>
         <div className="flex items-center gap-2 flex-wrap">
           <input
             id="rate-rounding"
@@ -199,22 +212,41 @@ export default function KursTiersSection() {
           </button>
           {roundSaved && <span className="text-xs text-green-600">Saved</span>}
           {roundDirty && !roundSaved && <span className="text-xs text-amber-700">unsaved</span>}
+
+          {/* Same row as Rounding rather than its own — both are card-level controls, not
+              per-country. Only the unconfigured countries, so the picker shrinks as the list
+              below grows and the same country can never be added twice. Hidden entirely once
+              every country is configured, when it could only offer an empty menu. */}
+          {addable.length > 0 && (
+            <>
+              <span className="w-px h-5 bg-cream-border shrink-0" />
+              <select
+                value={toAdd}
+                onChange={(e) => setToAdd(e.target.value)}
+                aria-label="Country to configure"
+                className={`${inputCls} w-56`}
+              >
+                <option value="">Add a country…</option>
+                {addable.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name} ({c.currency})</option>
+                ))}
+              </select>
+              <button type="button" onClick={addCountry} disabled={!toAdd} className={btnCls}>
+                Add
+              </button>
+            </>
+          )}
         </div>
         {!roundValid && roundDraft != null && (
           <p className="text-xs text-red-500">Rounding must be a whole number of at least 1.</p>
         )}
         {roundError && <p className="text-xs text-red-500">{roundError}</p>}
-        <span className="text-[10px] text-gray-400">
-          Prices for both Rate methods round UP to this step. Shared with nothing else, and
-          read when a product is saved — so changing it reprices each product on its next
-          save, not now.
-        </span>
       </div>
 
       {loading && <p className="text-xs text-gray-500">Loading…</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}
 
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:items-start md:gap-3">
         {visible.map((country) => (
           <CountryBrackets
             key={country.id}
@@ -227,41 +259,14 @@ export default function KursTiersSection() {
           />
         ))}
         {countries.length === 0 && !loading && (
-          <p className="text-xs text-gray-400">No countries yet.</p>
+          <p className="md:col-span-2 text-xs text-gray-400">No countries yet.</p>
         )}
         {countries.length > 0 && visible.length === 0 && !loading && (
-          <p className="text-xs text-gray-400">
-            No country has a rate configured. Add one below to start.
+          <p className="md:col-span-2 text-xs text-gray-400">
+            No country has a rate configured. Add one above to start.
           </p>
         )}
       </div>
-
-      {/* Only the unconfigured countries, so the picker shrinks as the list above grows and
-          the same country can never be added twice. Hidden entirely once every country is
-          configured, when it could only offer an empty menu. */}
-      {addable.length > 0 && (
-        <div className="flex items-center gap-2 flex-wrap">
-          <select
-            value={toAdd}
-            onChange={(e) => setToAdd(e.target.value)}
-            aria-label="Country to configure"
-            className={`${inputCls} w-56`}
-          >
-            <option value="">Add a country…</option>
-            {addable.map((c) => (
-              <option key={c.id} value={c.id}>{c.name} ({c.currency})</option>
-            ))}
-          </select>
-          <button type="button" onClick={addCountry} disabled={!toAdd} className={btnCls}>
-            Add
-          </button>
-        </div>
-      )}
-
-      <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-        Brackets are read when a product is saved. Changing them doesn&apos;t reprice
-        existing products — each one reprices the next time it is saved.
-      </p>
     </div>
   )
 }
@@ -375,16 +380,6 @@ function CountryBrackets({
     roundTo,
   })
 
-  // Off the draft, not `stored`: while clean they are equal, and while dirty the
-  // header should describe what the open editor shows.
-  const rates = draft.map((b) => Number(b.kurs)).filter((n) => Number.isFinite(n) && n > 0)
-  const spread =
-    rates.length > 0
-      ? rates.length > 1 && Math.min(...rates) !== Math.max(...rates)
-        ? `${fmt(Math.min(...rates))}–${fmt(Math.max(...rates))}`
-        : fmt(rates[0])
-      : null
-
   const handleSave = async () => {
     if (problems.length > 0) return
     setSaving(true)
@@ -427,23 +422,24 @@ function CountryBrackets({
           <polyline points="9 18 15 12 9 6" />
         </svg>
         <span className="text-sm font-medium text-foreground shrink-0">
-          {country.name} ({country.currency})
-        </span>
-        <span className="text-xs text-gray-400 shrink-0 tabular-nums">
-          actual {fmt(country.kurs)}
+          {country.currency}
         </span>
         <span className="flex-1" />
         {dirty && <span className="text-xs text-amber-700 shrink-0">unsaved</span>}
         {saved && <span className="text-xs text-green-600 shrink-0">Saved</span>}
         {/* The header answers "which countries are configured, and how" without expanding,
-            so the flat rate belongs beside the bracket summary rather than behind a click. */}
+            so the flat rate and bracket count belong beside the actual rate rather than
+            behind a click. */}
         <span className={`text-xs shrink-0 tabular-nums ${draft.length > 0 || Number(flatDraft) > 0 ? "text-gray-500" : "text-gray-400"}`}>
           {[
-            Number(flatDraft) > 0 ? `flat ${fmt(Number(flatDraft))}` : null,
-            draft.length === 0
-              ? null
-              : `${draft.length} bracket${draft.length > 1 ? "s" : ""}${spread ? ` · ${spread}` : ""}`,
-          ].filter(Boolean).join(" · ") || "not configured"}
+            `ACTUAL ${fmt(country.kurs)}`,
+            [
+              Number(flatDraft) > 0 ? `FLAT ${fmt(Number(flatDraft))}` : null,
+              draft.length === 0
+                ? null
+                : `${draft.length} BRACKET${draft.length > 1 ? "S" : ""}`,
+            ].filter(Boolean).join(" · ") || "NOT CONFIGURED",
+          ].join(" · ")}
         </span>
       </button>
 
@@ -461,15 +457,21 @@ function CountryBrackets({
               disabled={saving}
               className={`${inputCls} w-32 shrink-0 tabular-nums`}
             />
-            <span className="text-xs text-gray-400">
-              {Number(flatDraft) > 0
-                ? `charged to Flat Rate products · costs ${fmt(country.kurs)}`
-                : `not set — Flat Rate products are charged ${fmt(country.kurs)}, the cost rate, for no margin`}
-            </span>
+            {/* Only the fallback case, when nothing's set — the set case just repeats the
+                number already visible in the input beside it. */}
+            {Number(flatDraft) <= 0 && (
+              <span className="text-xs text-gray-400">
+                not set — Flat Rate products are charged {fmt(country.kurs)}, the cost rate, for no margin
+              </span>
+            )}
           </div>
         </div>
 
-        <div className="flex flex-col gap-1.5">
+        {/* overflow-x-auto: side-by-side on desktop (the wrapper one level up) halves this
+            card's width, and a bracket row's fixed-width fields don't shrink past their
+            md:w-32, so a narrower desktop viewport scrolls a row instead of clipping it —
+            same fix as Markup Tier's bracket rows. */}
+        <div className="flex flex-col gap-1.5 overflow-x-auto">
           {draft.length === 0 && (
             <p className="text-xs text-gray-400">
               No brackets. Tier Rate products for {country.name} are charged{" "}
@@ -477,26 +479,22 @@ function CountryBrackets({
             </p>
           )}
           {draft.map((band, i) => {
-            const kurs = Number(band.kurs)
-            const markup =
-              country.kurs > 0 && Number.isFinite(kurs) && kurs > 0
-                ? (kurs / country.kurs - 1) * 100
-                : null
             return (
               // No flex-wrap: a bracket is one row at every width. On a phone the two word
               // labels move into the inputs as placeholders and the inputs share whatever is
               // left, because "from valas 5000 charge 226" wrapped into a ragged three-line
               // block that read as three separate controls rather than one bracket.
               <div key={i} className="flex items-center gap-1.5">
-                <span className="hidden md:inline text-xs text-gray-400 shrink-0 w-20">from valas</span>
-                <input
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0">From</span>
+                <MoneyInput
                   value={band.minValas}
-                  onChange={(e) => setBand(i, { minValas: e.target.value })}
-                  type="number" min="0" step="any"
-                  placeholder="from valas"
-                  className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-32 md:shrink-0`}
+                  onChange={(v) => setBand(i, { minValas: v })}
+                  placeholder="from"
+                  unit={country.currency}
+                  name={`kurs-tier-${country.id}-${i}-from`}
+                  wrapClassName="flex-1 min-w-0 md:flex-none md:w-32 md:shrink-0"
                 />
-                <span className="hidden md:inline text-xs text-gray-400 shrink-0">charge</span>
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0">Charge</span>
                 <input
                   value={band.kurs}
                   onChange={(e) => setBand(i, { kurs: e.target.value })}
@@ -504,18 +502,6 @@ function CountryBrackets({
                   placeholder="charge"
                   className={`${inputCls} flex-1 min-w-0 md:flex-none md:w-32 md:shrink-0`}
                 />
-                {/* Always rendered, at a fixed width, even when there is no markup to show.
-                    The inputs beside it are flex-1 on mobile, so they absorb whatever this
-                    leaves — a variable-width or absent percentage sized every row's boxes
-                    differently and the column of brackets came out ragged. w-14 fits
-                    "+100.0%", the widest this can be for a sane rate. */}
-                <span
-                  className={`w-14 shrink-0 text-right text-xs tabular-nums ${
-                    markup == null ? "text-transparent" : markup >= 0 ? "text-green-700" : "text-red-600"
-                  }`}
-                >
-                  {markup != null && `${markup >= 0 ? "+" : ""}${markup.toFixed(1)}%`}
-                </span>
                 <button
                   type="button"
                   onClick={() => {

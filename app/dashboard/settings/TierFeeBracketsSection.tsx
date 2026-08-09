@@ -19,13 +19,16 @@ import { useTierFeeBrackets } from "@/hooks/useTierFeeBrackets"
 import type { TierFeeScope } from "@/lib/tier-fee"
 import {
   DEFAULT_RUPIAH_TIER_FEE_BRACKETS,
+  RUPIAH_TIER_FEE_ROUND_TO,
   bracketsForScope,
   resolveTierFee,
+  pickTierFeeBracket,
   toTierFeeMode,
   type TierFeeMode,
 } from "@/lib/tier-fee"
-import { calcTierFeeValasPrice, calcRupiahFeePrice, ceilTo } from "@/lib/pricing"
+import { calcTierFeeValasPrice, ceilTo } from "@/lib/pricing"
 import { useProductDefaults } from "@/hooks/useProductDefaults"
+import MoneyInput from "@/components/MoneyInput"
 import type { CountryRow, TierFeeBracketRow } from "@/lib/db"
 
 const inputCls =
@@ -37,60 +40,6 @@ const iconBtnCls =
 
 const fmt = (n: number) => n.toLocaleString("id-ID")
 const fmt2 = (n: number) => (Math.round(n * 100) / 100).toLocaleString("id-ID")
-
-// Draft values stay plain dot-decimal numeric strings (Number(draft.minBase) etc. depend
-// on that everywhere else in this file) — these two only convert at the input's edge, for
-// a live id-ID thousand-separator display ("." groups, "," is the decimal point). A valas
-// floor may be fractional, so the split is on the decimal point, not just digits.
-function formatMoney(raw: string): string {
-  if (raw === "") return ""
-  const [intPart, decPart] = raw.split(".")
-  const digits = intPart.replace(/\D/g, "")
-  const grouped = digits === "" ? "" : Number(digits).toLocaleString("id-ID")
-  return decPart !== undefined ? `${grouped},${decPart}` : grouped
-}
-
-function parseMoney(formatted: string): string {
-  const commaIdx = formatted.indexOf(",")
-  if (commaIdx === -1) return formatted.replace(/\D/g, "")
-  const intDigits = formatted.slice(0, commaIdx).replace(/\D/g, "")
-  const decDigits = formatted.slice(commaIdx + 1).replace(/\D/g, "")
-  return `${intDigits}.${decDigits}`
-}
-
-/** A bracket's "from"/fee amount: unit label ("Rp" ahead of the number, "%" after it, like
- *  the values they annotate are normally written), live thousand-separator formatting. */
-function MoneyInput({
-  value,
-  onChange,
-  placeholder,
-  wrapClassName,
-  unit = "Rp",
-}: {
-  value: string
-  onChange: (raw: string) => void
-  placeholder?: string
-  wrapClassName?: string
-  unit?: "Rp" | "%"
-}) {
-  const isSuffix = unit === "%"
-  return (
-    <div className={`relative ${wrapClassName ?? ""}`}>
-      <span
-        className={`pointer-events-none absolute top-1/2 -translate-y-1/2 text-xs text-gray-400 ${isSuffix ? "right-2" : "left-2"}`}
-      >
-        {unit}
-      </span>
-      <input
-        value={formatMoney(value)}
-        onChange={(e) => onChange(parseMoney(e.target.value))}
-        inputMode="decimal"
-        placeholder={placeholder}
-        className={`${inputCls} w-full ${isSuffix ? "pr-6" : "pl-7"}`}
-      />
-    </div>
-  )
-}
 
 /** Bracket being edited. Strings, as the number inputs produce. */
 type BracketDraft = { minBase: string; feeMode: TierFeeMode; feeValue: string }
@@ -105,7 +54,8 @@ export default function TierFeeBracketsSection() {
   const { brackets, loading, error, reload } = useTierFeeBrackets()
   const productDefaults = useProductDefaults()
   // Two scopes, not one per country (migrations 056/057), so a plain Set of the scope names.
-  const [open, setOpen] = useState<Set<TierFeeScope>>(new Set<TierFeeScope>(["rupiah"]))
+  // Both start closed.
+  const [open, setOpen] = useState<Set<TierFeeScope>>(new Set<TierFeeScope>())
 
   const toggle = (key: TierFeeScope) =>
     setOpen((prev) => {
@@ -132,7 +82,7 @@ export default function TierFeeBracketsSection() {
       {loading && <p className="text-xs text-gray-500">Loading…</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}
 
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:items-start md:gap-3">
         {(["rupiah", "valas"] as const).map((scope) => (
           <ScopeBrackets
             key={scope}
@@ -179,7 +129,7 @@ function ScopeBrackets({
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
-  const [tryBase, setTryBase] = useState(isValas ? "500" : "500000")
+  const [tryBase, setTryBase] = useState(isValas ? "500" : "807246")
 
   // Reset the draft from what's stored, but never over unsaved edits. Fires on the
   // CONTENTS of `stored`, not the array identity: bracketsForScope returns a fresh
@@ -233,17 +183,29 @@ function ScopeBrackets({
   // unsaved edits and includes the configured rounding step.
   const previewBase = Number(tryBase) || 0
   const fee = resolveTierFee(draft, previewBase)
-  // Both scopes are base cost + fee; only the valas scope rounds the total. Fed as a bare
-  // rupiah base — this previews what the BRACKETS do, so there is no rate or weight to
-  // convert through, and a real product's base cost also carries freight.
+  // Both scopes are base cost + fee, and both round the total — valas to the
+  // configurable roundTo, rupiah to the fixed RUPIAH_TIER_FEE_ROUND_TO (Flat Fee, which
+  // shares the same "cost + fee" shape, stays exact — see that constant's doc). Fed as a
+  // bare rupiah base — this previews what the BRACKETS do, so there is no rate or weight
+  // to convert through, and a real product's base cost also carries freight.
   const rawTotal = previewBase + Math.round(fee)
   const preview = {
     cogs: previewBase,
-    price: isValas ? ceilTo(rawTotal, roundTo) : calcRupiahFeePrice(previewBase, Math.round(fee)),
+    price: isValas ? ceilTo(rawTotal, roundTo) : ceilTo(rawTotal, RUPIAH_TIER_FEE_ROUND_TO),
   }
 
+  // Which bracket produced `fee`, so the preview can spell out the arithmetic instead of
+  // just the result — a percent bracket's "15% of X" isn't obvious from the fee alone.
+  const matchedBracket = pickTierFeeBracket(draft, previewBase)
+  const feeExplain =
+    matchedBracket == null
+      ? "No bracket matches this base — fee is 0."
+      : matchedBracket.feeMode === "percent"
+        ? `${fmt2(Number(matchedBracket.feeValue))}% of ${unit} ${fmt(previewBase)} = ${unit} ${fmt2(fee)}`
+        : `Flat fee: ${unit} ${fmt2(Number(matchedBracket.feeValue))}`
+
   const summary =
-    draft.length === 0 ? "no brackets" : `${draft.length} bracket${draft.length > 1 ? "s" : ""}`
+    draft.length === 0 ? "NO BRACKETS" : `${draft.length} BRACKET${draft.length > 1 ? "S" : ""}`
 
   const handleSave = async () => {
     if (problems.length > 0) return
@@ -290,7 +252,7 @@ function ScopeBrackets({
           <polyline points="9 18 15 12 9 6" />
         </svg>
         <span className="text-sm font-medium text-foreground shrink-0">
-          {isValas ? "Valas — every country" : "Rupiah — no country"}
+          {isValas ? "VALAS" : "RUPIAH"}
         </span>
         {isValas && (
           <span className="text-xs text-gray-400 shrink-0 tabular-nums">
@@ -313,11 +275,20 @@ function ScopeBrackets({
               to that base cost and the total rounded up to {fmt(roundTo)}.
             </>
           ) : (
-            <>Base and fee are both in rupiah, and the price is exactly base + fee.</>
+            <>
+              Base and fee are both in rupiah, and the price is base + fee rounded up to
+              {" "}{fmt(RUPIAH_TIER_FEE_ROUND_TO)}. The Fee field stays editable, and
+              changing these brackets never reprices an existing product — not even when
+              it is next saved.
+            </>
           )}
         </p>
 
-        <div className="flex flex-col gap-1.5">
+        {/* overflow-x-auto: side-by-side on desktop (the wrapper in the parent) halves this
+            panel's width, and a bracket row's fixed-width fields (see below) don't shrink
+            past their md:w-28, so a narrower desktop viewport scrolls a row instead of
+            clipping or wrapping it. */}
+        <div className="flex flex-col gap-1.5 overflow-x-auto">
           {draft.length === 0 && (
             <p className="text-xs text-gray-400">
               {isValas
@@ -326,27 +297,17 @@ function ScopeBrackets({
             </p>
           )}
           {draft.map((bracket, i) => {
-            const min = Number(bracket.minBase)
-            const value = Number(bracket.feeValue)
-            // What a percent bracket charges at its own floor — the one base where it
-            // is directly comparable to a fixed one.
-            const atFloor =
-              bracket.feeMode === "percent" && Number.isFinite(min) && Number.isFinite(value)
-                ? (min * value) / 100
-                : null
             return (
               // No flex-wrap: a bracket is one row at every width. On a phone the two word
-              // labels move into the controls and the worked example drops, because three
-              // fixed-width controls plus a sentence wrapped into a ragged block that read as
-              // several separate settings rather than one bracket. The example is derived —
-              // it restates what this bracket charges at its own floor — so it is the one
-              // thing here that can go without losing a setting.
+              // labels move into the controls, which is fine now that the worked example
+              // (once shown per-row) lives in "Try a base cost" below instead.
               <div key={i} className="flex items-center gap-1.5">
-                <span className="hidden md:inline text-xs text-gray-400 shrink-0 w-12">From</span>
+                <span className="hidden md:inline text-xs text-gray-400 shrink-0">From</span>
                 <MoneyInput
                   value={bracket.minBase}
                   onChange={(v) => setBracket(i, { minBase: v })}
                   placeholder="from"
+                  name={`bracket-${scope}-${i}-from`}
                   wrapClassName="flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0"
                 />
                 <span className="hidden md:inline text-xs text-gray-400 shrink-0 ml-2">Fee</span>
@@ -373,13 +334,9 @@ function ScopeBrackets({
                   onChange={(v) => setBracket(i, { feeValue: v })}
                   placeholder="fee"
                   unit={bracket.feeMode === "fixed" ? "Rp" : "%"}
+                  name={`bracket-${scope}-${i}-fee`}
                   wrapClassName="flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0"
                 />
-                {atFloor != null && (
-                  <span className="hidden md:inline text-xs text-gray-400 shrink-0 tabular-nums">
-                    = {unit} {fmt2(atFloor)} at {fmt(min)}
-                  </span>
-                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -409,11 +366,9 @@ function ScopeBrackets({
           <button
             type="button"
             onClick={() => {
-              // Rupiah has a real default — the table that used to be hardcoded in the
-              // products page. Valas never had one; its "default" is the empty set,
-              // same as a fresh install (Markup Tier products with a country price at
-              // cost, no fee, until the owner adds brackets).
-              setDraft(isValas ? [] : DEFAULT_RUPIAH_TIER_FEE_BRACKETS.map(toDraft))
+              // Same default table for both scopes — the one that used to be hardcoded
+              // in the products page.
+              setDraft(DEFAULT_RUPIAH_TIER_FEE_BRACKETS.map(toDraft))
               setDirty(true)
             }}
             title="Reset to default"
@@ -449,15 +404,15 @@ function ScopeBrackets({
             <span className="text-xs font-medium text-gray-500">
               Try a base cost
             </span>
-            <input
+            <MoneyInput
               value={tryBase}
-              onChange={(e) => setTryBase(e.target.value)}
-              type="number" min="0" step="any"
-              className={`${inputCls} w-32 shrink-0`}
+              onChange={setTryBase}
+              wrapClassName="w-32 shrink-0"
             />
           </div>
           {isValas ? (
             <>
+              <p className="text-xs text-gray-400 tabular-nums">{feeExplain}</p>
               <p className="text-xs text-gray-500 tabular-nums">
                 fee <span className="font-semibold text-foreground">{unit} {fmt2(fee)}</span>
                 {` → Rp ${fmt(previewBase)} + Rp ${fmt2(fee)}, rounded up to ${fmt(roundTo)}`}
@@ -478,33 +433,30 @@ function ScopeBrackets({
               )}
             </>
           ) : (
-            <p className="text-xs text-gray-500 tabular-nums">
-              fee <span className="font-semibold text-foreground">Rp {fmt(Math.round(fee))}</span>
-              {" → price "}
-              <span className="font-semibold text-foreground">Rp {fmt(Math.round(preview.price))}</span>
-            </p>
+            <>
+              <p className="text-xs text-gray-400 tabular-nums">{feeExplain}</p>
+              <p className="text-xs text-gray-500 tabular-nums">
+                fee <span className="font-semibold text-foreground">Rp {fmt2(fee)}</span>
+                {` → Rp ${fmt(previewBase)} + Rp ${fmt2(fee)}, rounded up to ${fmt(RUPIAH_TIER_FEE_ROUND_TO)}`}
+              </p>
+              <p className="text-xs text-gray-500 tabular-nums">
+                rounded up to {fmt(RUPIAH_TIER_FEE_ROUND_TO)} → price{" "}
+                <span className="font-semibold text-foreground">Rp {fmt(Math.round(preview.price))}</span>
+                {" · cost Rp "}{fmt(Math.round(preview.cogs))}
+                {" · profit "}
+                <span className={preview.price - preview.cogs >= 0 ? "text-green-700" : "text-red-600"}>
+                  Rp {fmt(Math.round(preview.price - preview.cogs))}
+                </span>
+              </p>
+              {preview.price !== rawTotal && (
+                <p className="text-[10px] text-gray-400 tabular-nums">
+                  The rounding added Rp {fmt(Math.round(preview.price - rawTotal))} on top of the fee.
+                </p>
+              )}
+            </>
           )}
         </div>
 
-        <p className={`text-xs rounded-lg px-3 py-2 border ${
-          isValas
-            ? "text-amber-700 bg-amber-50 border-amber-200"
-            : "text-gray-500 bg-gray-50 border-cream-border"
-        }`}>
-          {isValas ? (
-            <>
-              These are read when a product is saved and the price is computed from them
-              on the server. Changing them doesn&apos;t reprice existing products — each
-              one reprices the next time it is saved.
-            </>
-          ) : (
-            <>
-              A starting point, not a rule: the Fee field stays editable, and changing
-              these brackets never reprices an existing product — not even when it is
-              next saved.
-            </>
-          )}
-        </p>
       </div>
     </div>
   )

@@ -29,19 +29,31 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const body = await req.json()
-    const profitPct = Number(body.profitPct)
-    const operationalFee = Number(body.operationalFee)
-    const packingFee = Number(body.packingFee)
-    const markupPct = Number(body.markupPct)
-    const tierKursRoundTo = Number(body.tierKursRoundTo)
-    const profitMarginRoundTo = Number(body.profitMarginRoundTo)
-    // Narrowed rather than validated: toPricingMethod maps anything unknown to 'overseas',
-    // which is the column default, so a stale client cannot 400 on a field it never sent.
-    const defaultPricingMethod = toPricingMethod(body.defaultPricingMethod)
-    const flatFee = Number(body.flatFee)
-    const flatFeePct = Number(body.flatFeePct)
-    const flatFeeMin = Number(body.flatFeeMin)
-    const dpPercent = Number(body.dpPercent)
+
+    // Settings is one product_defaults row behind several independently-saved
+    // cards (General/Profit Margin/Markup Flat, plus the Kurs Tiers rounding
+    // field) — each PATCH now sends only the fields its own card owns. Missing
+    // fields keep whatever is currently stored rather than being reset to a
+    // bare default, so one card's save can never clobber another's.
+    const current = await getProductDefaults()
+    const has = (key: string) => Object.prototype.hasOwnProperty.call(body, key)
+
+    const profitPct = has("profitPct") ? Number(body.profitPct) : current.profitPct
+    const operationalFee = has("operationalFee") ? Number(body.operationalFee) : current.operationalFee
+    const packingFee = has("packingFee") ? Number(body.packingFee) : current.packingFee
+    const markupPct = has("markupPct") ? Number(body.markupPct) : current.markupPct
+    const tierKursRoundTo = has("tierKursRoundTo") ? Number(body.tierKursRoundTo) : current.tierKursRoundTo
+    const profitMarginRoundTo = has("profitMarginRoundTo") ? Number(body.profitMarginRoundTo) : current.profitMarginRoundTo
+    // Narrowed rather than validated: toPricingMethod maps anything unknown to 'overseas'.
+    // Only applied when the field is actually sent — otherwise it would silently reset a
+    // card that never touched this field.
+    const defaultPricingMethod = has("defaultPricingMethod")
+      ? toPricingMethod(body.defaultPricingMethod)
+      : current.defaultPricingMethod
+    const flatFee = has("flatFee") ? Number(body.flatFee) : current.flatFee
+    const flatFeePct = has("flatFeePct") ? Number(body.flatFeePct) : current.flatFeePct
+    const flatFeeMin = has("flatFeeMin") ? Number(body.flatFeeMin) : current.flatFeeMin
+    const dpPercent = has("dpPercent") ? Number(body.dpPercent) : current.dpPercent
 
     if (!Number.isFinite(profitPct) || !Number.isFinite(operationalFee) || !Number.isFinite(packingFee) || !Number.isFinite(markupPct)) {
       return NextResponse.json({ error: "profitPct, operationalFee, packingFee and markupPct must be numbers" }, { status: 400 })
@@ -78,12 +90,13 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "profitMarginRoundTo must be a whole number of at least 1" }, { status: 400 })
     }
 
-    // null is a real choice ("start the form on IDR"), so only a present-but-unusable value is
-    // rejected. An id for a country that does not exist raises an FK violation, caught below.
-    let defaultCountryId: number | null = null
-    if (body.defaultCountryId != null) {
-      defaultCountryId = Number(body.defaultCountryId)
-      if (!Number.isInteger(defaultCountryId) || defaultCountryId < 1) {
+    // null is a real choice ("start the form on IDR"), so it has to be told apart from
+    // "not sent" — has() does that; only a present-but-unusable value is rejected. An id
+    // for a country that does not exist raises an FK violation, caught below.
+    let defaultCountryId: number | null = current.defaultCountryId
+    if (has("defaultCountryId")) {
+      defaultCountryId = body.defaultCountryId == null ? null : Number(body.defaultCountryId)
+      if (defaultCountryId != null && (!Number.isInteger(defaultCountryId) || defaultCountryId < 1)) {
         return NextResponse.json({ error: "defaultCountryId must be a country id or null" }, { status: 400 })
       }
     }
