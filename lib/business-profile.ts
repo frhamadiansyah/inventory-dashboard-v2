@@ -1,7 +1,12 @@
 // Shared business identity fields, edited once from /dashboard/settings and
-// reused wherever a message needs them (today: the invoice's bank details
-// and DP threshold; ownerName/storeName/phoneNumber aren't wired into any
-// message yet, they're just stored for later).
+// reused wherever a message needs them (today: the invoice's bank details;
+// ownerName/storeName/phoneNumber aren't wired into any message yet, they're
+// just stored for later).
+//
+// The DP threshold used to live here (migration 043) but moved to
+// ProductDefaults (migration 057) — it's a pricing-adjacent setting, not
+// business identity, and the Settings page groups it with the rest of the
+// Pricing tab.
 
 export interface BusinessProfile {
   bankAccountHolder: string
@@ -13,11 +18,6 @@ export interface BusinessProfile {
   /** Public order-status site, e.g. "Cek rekapan mandiri {publicSiteUrl}" in
    *  the invoice message and "Cek resi {publicSiteUrl}" in the shipment one. */
   publicSiteUrl: string
-  /** % of an event's invoice total that must be paid before the default
-   *  invoice message is sent instead of the invoice_dp reminder (see
-   *  lib/db/invoice.ts). Whole number (30 means 30%), not a fraction. 0
-   *  disables the feature — every event always meets a 0% threshold. */
-  dpPercent: number
 }
 
 export const DEFAULT_BUSINESS_PROFILE: BusinessProfile = {
@@ -27,5 +27,4 @@ export const DEFAULT_BUSINESS_PROFILE: BusinessProfile = {
   storeName: "Yubisayu",
   phoneNumber: "",
   publicSiteUrl: "https://yubisayu-invoice.netlify.app/",
-  dpPercent: 0,
 }

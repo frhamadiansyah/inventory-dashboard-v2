@@ -77,6 +77,12 @@ export interface ProductDefaults {
    * field empty, which is the same state it had before this setting existed.
    */
   defaultPricingMethod: PricingMethod
+  /** % of an event's invoice total that must be paid before the default
+   *  invoice message is sent instead of the invoice_dp reminder (see
+   *  lib/db/invoice.ts). Whole number (30 means 30%), not a fraction. 0
+   *  disables the feature — every event always meets a 0% threshold.
+   *  Moved here from BusinessProfile in migration 057. */
+  dpPercent: number
 }
 
 export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
@@ -103,4 +109,5 @@ export const DEFAULT_PRODUCT_DEFAULTS: ProductDefaults = {
   // What the form hardcoded before migration 055, so an install that never touches this
   // opens exactly where it always did.
   defaultPricingMethod: "overseas",
+  dpPercent: 0,
 }

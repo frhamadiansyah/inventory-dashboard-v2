@@ -41,7 +41,7 @@ export async function updateMessageTemplate(
 
 export async function getBusinessProfile(): Promise<BusinessProfile> {
   const [row] = await sql`
-    SELECT bank_account_holder, bank_account_lines, owner_name, store_name, phone_number, public_site_url, dp_percent
+    SELECT bank_account_holder, bank_account_lines, owner_name, store_name, phone_number, public_site_url
     FROM business_profile WHERE id = 1
   `
   if (!row) return DEFAULT_BUSINESS_PROFILE
@@ -52,14 +52,13 @@ export async function getBusinessProfile(): Promise<BusinessProfile> {
     storeName: row.store_name as string,
     phoneNumber: row.phone_number as string,
     publicSiteUrl: row.public_site_url as string,
-    dpPercent: Number(row.dp_percent),
   }
 }
 
 export async function updateBusinessProfile(data: BusinessProfile, db: DBExecutor = sql): Promise<void> {
   await db`
-    INSERT INTO business_profile (id, bank_account_holder, bank_account_lines, owner_name, store_name, phone_number, public_site_url, dp_percent, updated_at)
-    VALUES (1, ${data.bankAccountHolder}, ${data.bankAccountLines}, ${data.ownerName}, ${data.storeName}, ${data.phoneNumber}, ${data.publicSiteUrl}, ${data.dpPercent}, NOW())
+    INSERT INTO business_profile (id, bank_account_holder, bank_account_lines, owner_name, store_name, phone_number, public_site_url, updated_at)
+    VALUES (1, ${data.bankAccountHolder}, ${data.bankAccountLines}, ${data.ownerName}, ${data.storeName}, ${data.phoneNumber}, ${data.publicSiteUrl}, NOW())
     ON CONFLICT (id) DO UPDATE SET
       bank_account_holder = EXCLUDED.bank_account_holder,
       bank_account_lines = EXCLUDED.bank_account_lines,
@@ -67,7 +66,6 @@ export async function updateBusinessProfile(data: BusinessProfile, db: DBExecuto
       store_name = EXCLUDED.store_name,
       phone_number = EXCLUDED.phone_number,
       public_site_url = EXCLUDED.public_site_url,
-      dp_percent = EXCLUDED.dp_percent,
       updated_at = NOW()
   `
 }
@@ -82,7 +80,7 @@ export async function getProductDefaults(): Promise<ProductDefaults> {
   const [row] = await sql`
     SELECT profit_pct, operational_fee, packing_fee, markup_pct, tier_kurs_round_to,
            profit_margin_round_to, flat_fee, flat_fee_pct, flat_fee_min, default_country_id,
-           default_pricing_method
+           default_pricing_method, dp_percent
     FROM product_defaults WHERE id = 1
   `
   if (!row) return DEFAULT_PRODUCT_DEFAULTS
@@ -106,6 +104,8 @@ export async function getProductDefaults(): Promise<ProductDefaults> {
     defaultCountryId: row.default_country_id != null ? Number(row.default_country_id) : null,
     // toPricingMethod narrows anything unexpected to 'overseas', matching the column default.
     defaultPricingMethod: toPricingMethod(row.default_pricing_method),
+    // 0 is legal (disables the DP-threshold feature), same reasoning as flatFeePct.
+    dpPercent: Number(row.dp_percent) || 0,
   }
 }
 
@@ -113,10 +113,10 @@ export async function updateProductDefaults(data: ProductDefaults, db: DBExecuto
   await db`
     INSERT INTO product_defaults (id, profit_pct, operational_fee, packing_fee, markup_pct,
       tier_kurs_round_to, profit_margin_round_to, flat_fee, flat_fee_pct, flat_fee_min,
-      default_country_id, default_pricing_method, updated_at)
+      default_country_id, default_pricing_method, dp_percent, updated_at)
     VALUES (1, ${data.profitPct}, ${data.operationalFee}, ${data.packingFee}, ${data.markupPct},
       ${data.tierKursRoundTo}, ${data.profitMarginRoundTo}, ${data.flatFee}, ${data.flatFeePct},
-      ${data.flatFeeMin}, ${data.defaultCountryId}, ${data.defaultPricingMethod}, NOW())
+      ${data.flatFeeMin}, ${data.defaultCountryId}, ${data.defaultPricingMethod}, ${data.dpPercent}, NOW())
     ON CONFLICT (id) DO UPDATE SET
       profit_pct = EXCLUDED.profit_pct,
       operational_fee = EXCLUDED.operational_fee,
@@ -129,6 +129,7 @@ export async function updateProductDefaults(data: ProductDefaults, db: DBExecuto
       flat_fee_min = EXCLUDED.flat_fee_min,
       default_country_id = EXCLUDED.default_country_id,
       default_pricing_method = EXCLUDED.default_pricing_method,
+      dp_percent = EXCLUDED.dp_percent,
       updated_at = NOW()
   `
 }

@@ -1,7 +1,7 @@
 import sql from "../db-pool"
 import { normalizeId } from "./helpers"
 import { lookupCustomerDetail } from "./customers"
-import { getMessageTemplates, getBusinessProfile } from "./settings"
+import { getMessageTemplates, getBusinessProfile, getProductDefaults } from "./settings"
 import { fillTemplate } from "../message-templates"
 import type { BusinessProfile } from "../business-profile"
 import type { InvoiceResult, InvoiceEvent, InvoiceShipment, InvoiceOrderLine, PublicInvoiceResult, PublicInvoiceEvent, PublicInvoiceOrderLine, PaymentRow, AdjustmentRow } from "./types"
@@ -153,7 +153,7 @@ export async function getInvoiceForCustomer(
   const lean = opts?.lean === true
   const ledger = opts?.ledger
 
-  const [orderRows, customerDetail, paymentRows, adjustmentRows, templates, businessProfile] = await Promise.all([
+  const [orderRows, customerDetail, paymentRows, adjustmentRows, templates, businessProfile, productDefaults] = await Promise.all([
     sql`
       SELECT o.id, o.event, o.customer, o.unit, o.note,
              o.unit_price, o.product_id,
@@ -204,6 +204,7 @@ export async function getInvoiceForCustomer(
     `,
     lean ? null : getMessageTemplates(),
     lean ? null : getBusinessProfile(),
+    lean ? null : getProductDefaults(),
   ])
 
   if (orderRows.length === 0) {
@@ -262,16 +263,17 @@ export async function getInvoiceForCustomer(
       invoice,
     }
     // DP is a percentage of the goods subtotal (subtotal barang) — excludes
-    // ongkir and adjustments.
-    const dpThreshold = invoice.subtotalBarang * ((businessProfile?.dpPercent ?? 0) / 100)
+    // ongkir and adjustments. Threshold itself now lives on ProductDefaults,
+    // not BusinessProfile (migration 057).
+    const dpThreshold = invoice.subtotalBarang * ((productDefaults?.dpPercent ?? 0) / 100)
     const meetsDpThreshold = invoice.subtotalBarang === 0 || invoice.pembayaran >= dpThreshold
 
     let message = ""
-    if (templates && businessProfile) {
+    if (templates && businessProfile && productDefaults) {
       message = meetsDpThreshold
         ? buildInvoiceMessage(base, customer, templates.invoice, businessProfile)
         : buildInvoiceMessage(base, customer, templates.invoice_dp, businessProfile, {
-            dpPercent: String(businessProfile.dpPercent),
+            dpPercent: String(productDefaults.dpPercent),
             dpAmount: formatIdrNumber(Math.round(dpThreshold)),
             dpShortfall: formatIdrNumber(Math.round(Math.max(0, dpThreshold - invoice.pembayaran))),
           })

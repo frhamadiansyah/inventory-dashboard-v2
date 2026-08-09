@@ -41,6 +41,7 @@ export async function PATCH(req: NextRequest) {
     const flatFee = Number(body.flatFee)
     const flatFeePct = Number(body.flatFeePct)
     const flatFeeMin = Number(body.flatFeeMin)
+    const dpPercent = Number(body.dpPercent)
 
     if (!Number.isFinite(profitPct) || !Number.isFinite(operationalFee) || !Number.isFinite(packingFee) || !Number.isFinite(markupPct)) {
       return NextResponse.json({ error: "profitPct, operationalFee, packingFee and markupPct must be numbers" }, { status: 400 })
@@ -56,6 +57,11 @@ export async function PATCH(req: NextRequest) {
     // than letting Postgres raise one.
     if (!Number.isFinite(flatFeePct) || flatFeePct < 0 || flatFeePct > 100) {
       return NextResponse.json({ error: "flatFeePct must be a number between 0 and 100" }, { status: 400 })
+    }
+    // Same bound as flatFeePct, same DB CHECK (migration 057): a threshold above the
+    // invoice total can never be met.
+    if (!Number.isFinite(dpPercent) || dpPercent < 0 || dpPercent > 100) {
+      return NextResponse.json({ error: "dpPercent must be a number between 0 and 100" }, { status: 400 })
     }
     // Lands in an INTEGER column with a CHECK (>= 0). 0 is legal and means no floor.
     if (!Number.isInteger(flatFeeMin) || flatFeeMin < 0) {
@@ -87,7 +93,7 @@ export async function PATCH(req: NextRequest) {
         updateProductDefaults({
           profitPct, operationalFee, packingFee, markupPct, tierKursRoundTo,
           profitMarginRoundTo, flatFee, flatFeePct, flatFeeMin, defaultCountryId,
-          defaultPricingMethod,
+          defaultPricingMethod, dpPercent,
         }, tx),
       )
     } catch (err) {
