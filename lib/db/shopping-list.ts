@@ -42,6 +42,9 @@ export interface ShoppingListItem {
   productId: number
   productName: string
   store: string
+  price: number   // rupiah selling price
+  valas: number   // foreign-currency cost, 0 when the product has none
+  currency: string // valas's currency code, "" when valas is 0
   totalUnits: number      // remaining to buy
   totalOriginal: number   // full ordered qty (for partial-state display)
   customerCount: number
@@ -71,6 +74,9 @@ export async function getShoppingList(event?: string): Promise<ShoppingListItem[
             o.product_id,
             p.name AS product_name,
             p.store,
+            p.price,
+            p.valas,
+            COALESCE(c.currency, '') AS currency,
             SUM(o.unit - COALESCE(o.unit_buy, 0))::int AS total_pending,
             prod_total.total_original,
             COUNT(DISTINCT o.customer)::int AS customer_count,
@@ -85,6 +91,7 @@ export async function getShoppingList(event?: string): Promise<ShoppingListItem[
             ) ORDER BY o.customer, o.id) AS orders
           FROM orders o
           JOIN products p ON p.id = o.product_id
+          LEFT JOIN countries c ON c.id = p.country_id
           -- Full ordered qty spans ALL orders for the product (including the
           -- fully-bought rows the WHERE below filters out), so the UI shows
           -- "remaining / total ordered" rather than "remaining / open rows".
@@ -95,7 +102,7 @@ export async function getShoppingList(event?: string): Promise<ShoppingListItem[
             GROUP BY event, product_id
           ) prod_total ON prod_total.event = o.event AND prod_total.product_id = o.product_id
           WHERE (o.unit_buy IS NULL OR o.unit_buy < o.unit) AND o.event = ${event}
-          GROUP BY o.event, o.product_id, p.name, p.store, prod_total.total_original
+          GROUP BY o.event, o.product_id, p.name, p.store, p.price, p.valas, c.currency, prod_total.total_original
           HAVING SUM(o.unit - COALESCE(o.unit_buy, 0)) > 0
           ORDER BY p.name, p.store
         `
@@ -105,6 +112,9 @@ export async function getShoppingList(event?: string): Promise<ShoppingListItem[
             o.product_id,
             p.name AS product_name,
             p.store,
+            p.price,
+            p.valas,
+            COALESCE(c.currency, '') AS currency,
             SUM(o.unit - COALESCE(o.unit_buy, 0))::int AS total_pending,
             prod_total.total_original,
             COUNT(DISTINCT o.customer)::int AS customer_count,
@@ -119,6 +129,7 @@ export async function getShoppingList(event?: string): Promise<ShoppingListItem[
             ) ORDER BY o.customer, o.id) AS orders
           FROM orders o
           JOIN products p ON p.id = o.product_id
+          LEFT JOIN countries c ON c.id = p.country_id
           JOIN events e ON e.name = o.event
           -- Full ordered qty spans ALL orders for the (event, product),
           -- including the fully-bought rows the WHERE below filters out.
@@ -128,7 +139,7 @@ export async function getShoppingList(event?: string): Promise<ShoppingListItem[
             GROUP BY event, product_id
           ) prod_total ON prod_total.event = o.event AND prod_total.product_id = o.product_id
           WHERE o.unit_buy IS NULL OR o.unit_buy < o.unit
-          GROUP BY o.event, o.product_id, p.name, p.store, prod_total.total_original
+          GROUP BY o.event, o.product_id, p.name, p.store, p.price, p.valas, c.currency, prod_total.total_original
           HAVING SUM(o.unit - COALESCE(o.unit_buy, 0)) > 0
           -- Most recently created event first (matches the dashboard's event
           -- ordering); product name then store within each event. MAX() because
@@ -154,6 +165,10 @@ export async function getShoppingList(event?: string): Promise<ShoppingListItem[
     productId: r.product_id as number,
     productName: r.product_name as string,
     store: r.store as string,
+    price: (r.price as number) ?? 0,
+    // valas is NUMERIC — postgres-js returns it as a string, so coerce.
+    valas: Number(r.valas) || 0,
+    currency: (r.currency as string) ?? "",
     totalUnits: r.total_pending as number,
     totalOriginal: r.total_original as number,
     customerCount: r.customer_count as number,

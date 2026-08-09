@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
 
     const allUpdates: (UpdatedRow & { receipt: string })[] = []
     const results: { item: string; rows: UpdatedRow[]; excess: number }[] = []
-    const excessRows: { event: string; items: string; unitBuy: number; receipt: string }[] = []
+    const excessRows: { event: string; items: string; unitBuy: number; receipt: string; unitDispatch: null; unitArrive: null }[] = []
 
     for (const line of items) {
       const eligible = eligibleMap.get(line.item) ?? []
@@ -110,7 +110,11 @@ export async function POST(req: NextRequest) {
       allUpdates.push(...updates)
       results.push(itemResult)
       if (itemResult.excess > 0) {
-        excessRows.push({ event, items: line.item, unitBuy: itemResult.excess, receipt: receiptStr })
+        // Bought more than any pending order needed — nothing dispatched or
+        // arrived yet, so this must NOT default to appendExcessPurchase's
+        // usual "fully arrived" (that default is for callers logging stock
+        // already physically in hand, which this isn't).
+        excessRows.push({ event, items: line.item, unitBuy: itemResult.excess, receipt: receiptStr, unitDispatch: null, unitArrive: null })
       }
     }
 

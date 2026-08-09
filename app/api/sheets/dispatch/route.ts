@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
-import { getDispatchList, getDuplicateFormRowsForEvent, bulkUpdateDispatch, cancelUndispatchedRemainder, withActor, fetchPaidStatusMap, PAID_PRIORITY_RANK, type PaidStatus } from "@/lib/db"
+import { getDispatchList, getExcessDispatchPending, getDuplicateFormRowsForEvent, bulkUpdateDispatch, cancelUndispatchedRemainder, withActor, fetchPaidStatusMap, PAID_PRIORITY_RANK, type PaidStatus } from "@/lib/db"
 
 type ItemLine = { item: string; qty: number }
 type UpdatedRow = { rowNumber: number; customer: string; oldUnitDispatch: number; unitDispatch: number }
@@ -84,8 +84,11 @@ export async function GET(req: NextRequest) {
   const event = req.nextUrl.searchParams.get("event") ?? undefined
 
   try {
-    const items = await getDispatchList(event)
-    return NextResponse.json({ items }, { headers: { "Cache-Control": "no-store" } })
+    const [items, excessPending] = await Promise.all([
+      getDispatchList(event),
+      getExcessDispatchPending(event),
+    ])
+    return NextResponse.json({ items, excessPending }, { headers: { "Cache-Control": "no-store" } })
   } catch (err) {
     console.error("Failed to fetch dispatch list:", err)
     return NextResponse.json({ error: "Failed to fetch dispatch list" }, { status: 500 })

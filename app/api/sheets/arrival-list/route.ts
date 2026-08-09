@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireSession, requireOwner } from "@/lib/api"
-import { getArrivalList, markProductArrived, recordWrongProduct, recordBrokenArrival, recordMissingArrival, recordCustomerCancellation, recordNotReceived, withActor } from "@/lib/db"
+import { getArrivalList, getExcessArrivalPending, markProductArrived, recordWrongProduct, recordBrokenArrival, recordMissingArrival, recordCustomerCancellation, recordNotReceived, withActor } from "@/lib/db"
 
 export async function GET(req: NextRequest) {
   const { session, error: authError } = await requireSession()
@@ -11,8 +11,11 @@ export async function GET(req: NextRequest) {
   const event = req.nextUrl.searchParams.get("event") ?? undefined
 
   try {
-    const items = await getArrivalList(event)
-    return NextResponse.json({ items }, { headers: { "Cache-Control": "no-store" } })
+    const [items, excessPending] = await Promise.all([
+      getArrivalList(event),
+      getExcessArrivalPending(event),
+    ])
+    return NextResponse.json({ items, excessPending }, { headers: { "Cache-Control": "no-store" } })
   } catch (err) {
     console.error("Failed to fetch arrival list:", err)
     return NextResponse.json({ error: "Failed to fetch arrival list" }, { status: 500 })

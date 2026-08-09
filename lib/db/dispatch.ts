@@ -1,5 +1,6 @@
 import sql from "../db-pool"
 import { PAID_PRIORITY_RANK, fetchPaidStatusMap, type PaidStatus } from "./shopping-list"
+import type { ExcessTransitItem, ExcessReason } from "./types"
 
 // ─── Dispatch List ──────────────────────────────────────────────────────────
 //
@@ -160,6 +161,54 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
   }
 
   return items
+}
+
+// ─── Excess (overbuy) Dispatch Pending ─────────────────────────────────────
+//
+// excess_purchase rows that have been bought but not yet dispatched. Unlike
+// getDispatchList these have no customer to allocate to — the row just
+// advances its own buy -> dispatch stage (see the "Overbuy in transit"
+// section on the Dispatch List page).
+
+export async function getExcessDispatchPending(event?: string): Promise<ExcessTransitItem[]> {
+  const rows = event
+    ? await sql`
+        WITH product_store AS (SELECT name, MIN(store) AS store FROM products GROUP BY name)
+        SELECT e.id, e.event, e.items, e.reason, e.unit_buy,
+               COALESCE(e.unit_dispatch, 0) AS unit_dispatch,
+               COALESCE(e.unit_arrive, 0) AS unit_arrive,
+               e.receipt, COALESCE(ps.store, '') AS store
+        FROM excess_purchase e
+        LEFT JOIN product_store ps ON ps.name = e.items
+        WHERE e.unit_buy IS NOT NULL
+          AND (e.unit_dispatch IS NULL OR e.unit_dispatch < e.unit_buy)
+          AND e.event = ${event}
+        ORDER BY e.id ASC
+      `
+    : await sql`
+        WITH product_store AS (SELECT name, MIN(store) AS store FROM products GROUP BY name)
+        SELECT e.id, e.event, e.items, e.reason, e.unit_buy,
+               COALESCE(e.unit_dispatch, 0) AS unit_dispatch,
+               COALESCE(e.unit_arrive, 0) AS unit_arrive,
+               e.receipt, COALESCE(ps.store, '') AS store
+        FROM excess_purchase e
+        LEFT JOIN product_store ps ON ps.name = e.items
+        WHERE e.unit_buy IS NOT NULL
+          AND (e.unit_dispatch IS NULL OR e.unit_dispatch < e.unit_buy)
+        ORDER BY e.id ASC
+      `
+  return rows.map((r) => ({
+    rowNumber: r.id as number,
+    event: r.event as string,
+    items: r.items as string,
+    store: r.store as string,
+    reason: r.reason as ExcessReason,
+    unitBuy: r.unit_buy as number,
+    unitDispatch: r.unit_dispatch as number,
+    unitArrive: r.unit_arrive as number,
+    pending: (r.unit_buy as number) - (r.unit_dispatch as number),
+    receipt: (r.receipt as string) ?? "",
+  }))
 }
 
 // ─── Dispatch Document ──────────────────────────────────────────────────────

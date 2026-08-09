@@ -1,6 +1,6 @@
 "use client"
 
-import { displayIg } from "@/lib/format"
+import { displayIg, fmt } from "@/lib/format"
 import TableSkeleton from "@/components/TableSkeleton"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { PaidStatus, ShoppingListItem, ShoppingListOrder } from "@/lib/db"
@@ -214,15 +214,6 @@ function CustomerBadge({ orders }: { orders: CustomerBadgeOrder[] }) {
           <circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
         </svg>
         <span className="text-xs tabular-nums">{totalCount}</span>
-        {allPaid ? (
-          <span className="text-xs text-green-600"> · all paid</span>
-        ) : paidCount > 0 ? (
-          <span className="text-xs">
-            {" · "}
-            <span className="text-green-600 font-medium">{paidCount}</span>
-            {" paid"}
-          </span>
-        ) : null}
       </button>
       {open && (
         <div
@@ -257,11 +248,13 @@ function CustomerBadge({ orders }: { orders: CustomerBadgeOrder[] }) {
 export default function ShoppingListClient() {
   const options = useSheetOptions()
   const [items, setItems] = useState<ShoppingListItem[]>([])
+  const [excessByItem, setExcessByItem] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [selectedEvent, setSelectedEvent] = useState("")
   const [search, setSearch] = useState("")
   const [buyingItem, setBuyingItem] = useState<ShoppingListItem | null>(null)
+  const [applyingExcessItem, setApplyingExcessItem] = useState<ShoppingListItem | null>(null)
   const [purchaseOpen, setPurchaseOpen] = useState(false)
   const [collapsedEvents, setCollapsedEvents] = useState<Set<string>>(new Set())
   const [collapsedStores, setCollapsedStores] = useState<Set<string>>(new Set())
@@ -276,10 +269,11 @@ export default function ShoppingListClient() {
     const url = event
       ? `/api/sheets/shopping-list?event=${encodeURIComponent(event)}`
       : "/api/sheets/shopping-list"
-    fetchJson<{ items: ShoppingListItem[] }>(url)
+    fetchJson<{ items: ShoppingListItem[]; excessByItem?: Record<string, number> }>(url)
       .then((data) => {
         const items = data.items ?? []
         setItems(items)
+        setExcessByItem(data.excessByItem ?? {})
         // Stores start collapsed (event headers + store headers visible, items
         // hidden). Only on an explicit load — a silent post-mutation refresh
         // leaves whatever the user has expanded alone.
@@ -517,37 +511,55 @@ export default function ShoppingListClient() {
                           aria-label={`Select ${row.item.productName}`}
                         />
                       )}
-                      <div className="flex items-baseline gap-1.5 min-w-0">
-                        <span className="text-foreground">{row.item.productName}</span>
-                        <CustomerBadge
-                          orders={row.item.orders.map((o) => ({
-                            customer: o.customer,
-                            qty: o.pending,
-                            paidStatus: o.paidStatus,
-                          }))}
-                        />
+                      <div className="min-w-0">
+                        <div className="text-foreground">{row.item.productName}</div>
+                        <div className="flex items-center gap-1.5 text-xs text-gray-400 tabular-nums">
+                          <CustomerBadge
+                            orders={row.item.orders.map((o) => ({
+                              customer: o.customer,
+                              qty: o.pending,
+                              paidStatus: o.paidStatus,
+                            }))}
+                          />
+                          {" · "}Rp {fmt(row.item.price)}
+                          {row.item.valas > 0 && ` · ${row.item.currency} ${fmt(row.item.valas)}`}
+                        </div>
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-right">
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
                     <span className="tabular-nums font-bold text-foreground">{row.item.totalUnits}</span>
                     {row.item.totalUnits < row.item.totalOriginal && (
-                      <span className="text-xs text-gray-400 font-normal tabular-nums" title="Partially bought">
+                      <span className="text-gray-400 font-normal tabular-nums" title="Partially bought">
                         {" "}/ {row.item.totalOriginal}
                       </span>
                     )}
                   </td>
                   <td className="px-4 py-2.5">
-                    <button
-                      onClick={() => setBuyingItem(row.item)}
-                      title="Mark purchased"
-                      className="text-gray-400 hover:text-green-600 transition-colors"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" />
-                        <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
-                      </svg>
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      {(excessByItem[row.item.productName] ?? 0) > 0 && (
+                        <button
+                          onClick={() => setApplyingExcessItem(row.item)}
+                          title="Apply excess"
+                          className="text-gray-400 hover:text-brand transition-colors"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                            <path d="m9 11 3 3L22 4" />
+                          </svg>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setBuyingItem(row.item)}
+                        title="Mark purchased"
+                        className="text-gray-400 hover:text-green-600 transition-colors"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" />
+                          <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
+                        </svg>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               )
@@ -596,7 +608,7 @@ export default function ShoppingListClient() {
                           <div className="flex-1 min-w-0">
                             <div className="text-xs text-foreground">{item.productName}</div>
                             {/* Same badge as desktop — tap to see who ordered. */}
-                            <div className="mt-0.5">
+                            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-gray-400 tabular-nums">
                               <CustomerBadge
                                 orders={item.orders.map((o) => ({
                                   customer: o.customer,
@@ -604,15 +616,20 @@ export default function ShoppingListClient() {
                                   paidStatus: o.paidStatus,
                                 }))}
                               />
+                              {" · "}Rp {fmt(item.price)}
+                              {item.valas > 0 && ` · ${item.currency} ${fmt(item.valas)}`}
                             </div>
                           </div>
                           {/* Match desktop: bold = remaining to buy, faded "/ total" only when partially bought. */}
                           <div className="text-sm font-bold tabular-nums whitespace-nowrap text-foreground">
                             {item.totalUnits}
                             {item.totalUnits < item.totalOriginal && (
-                              <span className="text-xs text-gray-400 font-normal" title="Partially bought"> / {item.totalOriginal}</span>
+                              <span className="text-gray-400 font-normal" title="Partially bought"> / {item.totalOriginal}</span>
                             )}
                           </div>
+                          {(excessByItem[item.productName] ?? 0) > 0 && (
+                            <button type="button" onClick={() => setApplyingExcessItem(item)} aria-label="Apply excess" className="w-9 h-9 rounded-lg border border-cream-border text-brand flex items-center justify-center shrink-0 active:bg-blue-50 active:text-blue-700 active:border-blue-200"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><path d="m9 11 3 3L22 4" /></svg></button>
+                          )}
                           <button type="button" onClick={() => setBuyingItem(item)} aria-label="Mark purchased" className="w-9 h-9 rounded-lg border border-cream-border text-brand flex items-center justify-center shrink-0 active:bg-green-50 active:text-green-700 active:border-green-200"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" /><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" /></svg></button>
                         </div>
                     ))}
@@ -631,6 +648,18 @@ export default function ShoppingListClient() {
           onSuccess={() => {
             handleBoughtSuccess()
             setBuyingItem(null)
+          }}
+        />
+      )}
+
+      {applyingExcessItem && (
+        <ApplyShoppingExcessModal
+          item={applyingExcessItem}
+          available={excessByItem[applyingExcessItem.productName] ?? 0}
+          onClose={() => setApplyingExcessItem(null)}
+          onSuccess={() => {
+            handleBoughtSuccess()
+            setApplyingExcessItem(null)
           }}
         />
       )}
@@ -1283,6 +1312,182 @@ function BuyModal({
             className={`px-4 py-1.5 rounded-lg text-white text-sm font-medium disabled:opacity-50 transition-colors ${isOos ? "bg-red-600 hover:bg-red-700" : "bg-green-600 hover:bg-green-700"}`}
           >
             {saving ? "Saving…" : isOos ? "Mark sold out" : "Mark purchased"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Apply excess (from the Shopping List side) ─────────────────────────────
+//
+// Mirror of the Inventory page's "Apply Excess": that flow starts from an
+// excess row and picks target orders; this starts from a Shopping List item
+// and pulls from whichever sellable excess_purchase rows (every reason except
+// broken/missing) match its product name, favoring this event's own excess first.
+
+function ApplyShoppingExcessModal({
+  item,
+  available,
+  onClose,
+  onSuccess,
+}: {
+  item: ShoppingListItem
+  available: number
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const defaultQty = Math.min(available, item.totalUnits)
+  const [qty, setQty] = useState(String(defaultQty))
+  const [receipt, setReceipt] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  const quantity = Math.max(0, Number(qty) || 0)
+  const cap = Math.min(available, item.totalUnits)
+  // Buying fills highest-priority customers first (item.orders is already paid
+  // → partial → unpaid) — same order applyExcessToShoppingItem fills server-side.
+  const preview = computeFill(item.orders, quantity)
+
+  async function handleSubmit() {
+    if (quantity < 1) return
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const res = await fetch("/api/sheets/shopping-list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "apply_excess",
+          event: item.event,
+          productId: item.productId,
+          productName: item.productName,
+          qty: quantity,
+          receipt: receipt.trim(),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "Failed to apply excess")
+      onSuccess()
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Failed to apply excess")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl border border-cream-border shadow-xl w-full max-w-sm flex flex-col gap-5 p-6 max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-foreground">{item.productName}</div>
+            <div className="text-xs text-gray-400 mt-0.5">
+              {item.event}{item.store ? ` · ${item.store}` : ""}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-brand transition-colors shrink-0">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Qty + Receipt inputs */}
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-gray-500">
+              Units to apply <span className="text-gray-400">(available: {available}, needed: {item.totalUnits})</span>
+            </label>
+            <input
+              type="number"
+              min="1"
+              max={cap}
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") onClose() }}
+              autoFocus
+              className="border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-gray-500">
+              Receipt <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <input
+              type="text"
+              value={receipt}
+              onChange={(e) => setReceipt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); if (e.key === "Escape") onClose() }}
+              placeholder="e.g. INV-001"
+              className="border border-cream-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
+            />
+          </div>
+        </div>
+
+        {/* Live preview */}
+        {quantity > 0 && (
+          <div className="flex flex-col gap-2 text-xs">
+            {preview.filled.length > 0 && (
+              <div>
+                <div className="font-medium text-gray-500 mb-1">Will apply ({preview.filled.reduce((s, f) => s + f.allocated, 0)} units):</div>
+                <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto pr-0.5">
+                  {preview.filled.map((f) => (
+                    <div key={f.order.id} className="flex items-center justify-between px-2 py-1 rounded-md bg-green-50">
+                      <span className="text-green-800 truncate">{displayIg(f.order.customer)}</span>
+                      <span className="text-green-700 font-medium ml-2 shrink-0 tabular-nums">
+                        {f.allocated}×
+                        {f.allocated < f.order.pending && (
+                          <span className="text-green-600/70 font-normal"> of {f.order.pending}</span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {preview.unfilled.length > 0 && (
+              <div>
+                <div className="font-medium text-gray-500 mb-1">Stays in list ({preview.unfilled.reduce((s, o) => s + o.pending, 0)} units):</div>
+                <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto pr-0.5">
+                  {preview.unfilled.map((o) => (
+                    <div key={o.id} className="flex items-center justify-between px-2 py-1 rounded-md bg-gray-50">
+                      <span className="text-gray-500 truncate">{displayIg(o.customer)}</span>
+                      <span className="text-gray-400 font-medium ml-2 shrink-0 tabular-nums">{o.pending}×</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2">
+          {saveError && <p className="text-xs text-red-500 mr-auto">{saveError}</p>}
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="px-3 py-1.5 rounded-lg border border-cream-border text-gray-600 text-sm hover:border-brand hover:text-brand disabled:opacity-50 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={saving || quantity < 1}
+            className="px-4 py-1.5 rounded-lg text-white text-sm font-medium disabled:opacity-50 transition-colors bg-brand hover:bg-brand-hover"
+          >
+            {saving ? "Saving…" : "Apply excess"}
           </button>
         </div>
       </div>
