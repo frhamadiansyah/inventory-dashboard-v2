@@ -122,6 +122,10 @@ export interface ExcessTransitItem {
   rowNumber: number
   event: string
   items: string
+  // Joined by item-name from products (excess_purchase.items isn't FK'd) —
+  // same name-collision-across-stores caveat as the Inventory page's price
+  // join, so a bare name shared by multiple stores picks one arbitrarily.
+  store: string
   reason: ExcessReason
   unitBuy: number
   unitDispatch: number

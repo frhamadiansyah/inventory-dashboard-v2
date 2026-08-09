@@ -512,10 +512,10 @@ export default function ArrivalListClient() {
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-right">
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
                     <span className="tabular-nums font-bold text-foreground">{row.item.totalPending}</span>
                     {row.item.totalPending < row.item.totalBought && (
-                      <span className="text-xs text-gray-400 font-normal tabular-nums" title="Partially arrived">
+                      <span className="text-gray-400 font-normal tabular-nums" title="Partially arrived">
                         {" "}/ {row.item.totalBought}
                       </span>
                     )}
@@ -587,7 +587,7 @@ export default function ArrivalListClient() {
                         <div className="text-sm font-bold tabular-nums whitespace-nowrap text-foreground">
                           {item.totalPending}
                           {item.totalPending < item.totalBought && (
-                            <span className="text-xs text-gray-400 font-normal" title="Partially arrived"> / {item.totalBought}</span>
+                            <span className="text-gray-400 font-normal" title="Partially arrived"> / {item.totalBought}</span>
                           )}
                         </div>
                         <button type="button" onClick={() => setArrivingItem(item)} aria-label="Mark as arrived" className="w-9 h-9 rounded-lg border border-cream-border text-brand flex items-center justify-center shrink-0 active:bg-blue-50 active:text-blue-700 active:border-blue-200">

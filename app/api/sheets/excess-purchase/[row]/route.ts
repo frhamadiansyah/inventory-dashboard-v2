@@ -7,7 +7,7 @@ import {
   bulkUpdateArrive,
   bulkUpdateDispatch,
   deleteExcessRow,
-  updateExcessRowUnitBuy,
+  updateExcessRowRemaining,
   updateExcessRow,
   withActor,
 } from "@/lib/db"
@@ -168,7 +168,11 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (remaining <= 0) {
       await withActor(session.user.email, (tx) => deleteExcessRow(rowNumber, tx))
     } else {
-      await withActor(session.user.email, (tx) => updateExcessRowUnitBuy(rowNumber, remaining, tx))
+      await withActor(session.user.email, (tx) => updateExcessRowRemaining(
+        rowNumber,
+        { unitBuy: remaining, unitDispatch: remainingDispatch > 0 ? remainingDispatch : null, unitArrive: remainingArrive > 0 ? remainingArrive : null },
+        tx,
+      ))
     }
 
     return NextResponse.json({

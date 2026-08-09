@@ -7,6 +7,26 @@ import { fmt } from "@/lib/format"
 
 type Stage = "dispatch" | "arrive"
 
+// Matches the per-row action icon on the Dispatch List (paper airplane) and
+// Receiving List (package) pages, so this section's action reads the same.
+function StageIcon({ stage }: { stage: Stage }) {
+  if (stage === "dispatch") {
+    return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <line x1="22" y1="2" x2="11" y2="13" />
+        <polygon points="22 2 15 22 11 13 2 9 22 2" />
+      </svg>
+    )
+  }
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+      <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+      <line x1="12" y1="22.08" x2="12" y2="12" />
+    </svg>
+  )
+}
+
 export default function OverbuyTransitList({
   items,
   stage,
@@ -33,26 +53,46 @@ export default function OverbuyTransitList({
         <div className="text-sm font-semibold text-foreground">{title}</div>
         <div className="text-xs text-gray-400">{subtitle}</div>
       </div>
-      <div className="divide-y divide-cream-border">
-        {items.map((it) => (
-          <div key={it.rowNumber} className="flex items-center gap-3 px-4 py-2.5">
-            <div className="min-w-0 flex-1">
-              <div className="text-sm text-foreground truncate">{it.items}</div>
-              <div className="text-xs text-gray-400">{it.event}</div>
-            </div>
-            <span className={`inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded-full text-[10px] font-medium border ${REASON_CLASS[it.reason]}`}>
-              {REASON_LABEL[it.reason]}
-            </span>
-            <span className="text-sm font-bold tabular-nums text-foreground w-12 text-right">{fmt(it.pending)}</span>
-            <button
-              type="button"
-              onClick={() => setOpenRow(it.rowNumber)}
-              className="text-xs font-medium text-brand hover:underline shrink-0"
-            >
-              {actionLabel}
-            </button>
-          </div>
-        ))}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="border-b border-cream-border bg-gray-50/80">
+              <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-44">Event</th>
+              <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-36">Store</th>
+              <th className="text-left px-4 py-2.5 font-medium text-gray-500">Item</th>
+              <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-32">Reason</th>
+              <th className="text-right px-4 py-2.5 font-medium text-gray-500 w-20">Qty</th>
+              <th className="px-4 py-2.5 w-10" />
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((it) => (
+              <tr key={it.rowNumber} className="border-b border-cream-border last:border-0 hover:bg-gray-50/50 transition-colors">
+                <td className="px-4 py-2.5 text-foreground">{it.event}</td>
+                <td className="px-4 py-2.5 text-gray-600">{it.store || "—"}</td>
+                <td className="px-4 py-2.5 text-foreground">{it.items}</td>
+                <td className="px-4 py-2.5">
+                  <span className={`inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded-full text-[10px] font-medium border ${REASON_CLASS[it.reason]}`}>
+                    {REASON_LABEL[it.reason]}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-right">
+                  <span className="tabular-nums font-bold text-foreground">{fmt(it.pending)}</span>
+                </td>
+                <td className="px-4 py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setOpenRow(it.rowNumber)}
+                    title={actionLabel}
+                    className="text-gray-400 hover:text-green-600 transition-colors"
+                  >
+                    <StageIcon stage={stage} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
       {openItem && (
         <MarkStageModal

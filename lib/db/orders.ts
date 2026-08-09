@@ -1,5 +1,6 @@
 import sql from "../db-pool"
 import { tsToString, normalizeCustomer } from "./helpers"
+import { fetchPaidStatusMap, compareOrderPriority } from "./shopping-list"
 import type { DBExecutor } from "./actor"
 import type { SheetOptions, ItemOption, OrderRow, FormRow, ExcessRow, ExcessReason, PurchaseUpdate, ArriveUpdate, DispatchUpdate, ExcessDispatchUpdate, ExcessArriveUpdate } from "./types"
 
@@ -1086,9 +1087,204 @@ export async function appendExcessPurchase(
   `
 }
 
-export async function updateExcessRowUnitBuy(rowNumber: number, unitBuy: number, db: DBExecutor = sql): Promise<void> {
+/** Item name → total remaining sellable-excess units (every reason except
+ *  broken/missing — same scope as the Inventory page's "Apply All"), for the
+ *  Shopping List's "Apply Excess" button (shown per item when this map has a
+ *  positive entry for that item's product name). */
+export async function getSellableExcessTotals(): Promise<Record<string, number>> {
+  const rows = await sql`
+    SELECT items, SUM(unit_buy)::int AS total
+    FROM excess_purchase
+    WHERE reason NOT IN ('broken', 'missing')
+    GROUP BY items
+  `
+  const totals: Record<string, number> = {}
+  for (const r of rows) totals[r.items as string] = r.total as number
+  return totals
+}
+
+export interface ApplyExcessToItemResult {
+  filled: { rowNumber: number; customer: string; oldUnitBuy: number; unitBuy: number }[]
+  applied: number
+  remainder: number
+}
+
+/**
+ * Apply sellable excess stock (every reason except broken/missing — same
+ * scope as the Inventory page's "Apply All") to a Shopping List item's own
+ * pending orders — the mirror of the Inventory page's "Apply Excess" (which
+ * starts from an excess row and picks target orders): this starts from the
+ * order side and pulls from whichever excess_purchase rows match the item
+ * name, favoring this event's own excess first, then oldest. Capped at `qty`
+ * units total. Orders are filled paid → partial → unpaid then earliest order,
+ * matching markProductBought's priority so the client's FIFO preview (which
+ * walks the same pre-sorted item.orders) matches what actually gets applied.
+ *
+ * Each excess row's own unit_dispatch/unit_arrive caps what a target order can
+ * inherit — same reasoning as the Inventory page's apply routes: in-transit
+ * excess (not yet arrived) must not make the target look arrived just because
+ * it was reassigned on paper.
+ */
+export async function applyExcessToShoppingItem(
+  data: { event: string; productId: number; productName: string; qty: number; receipt: string },
+  db: DBExecutor = sql,
+): Promise<ApplyExcessToItemResult> {
+  if (!Number.isInteger(data.qty) || data.qty < 1) {
+    throw new Error("qty must be a positive integer")
+  }
+
+  const [orderRows, excessRows, statusMap] = await Promise.all([
+    db`
+      SELECT id, customer, unit, unit_buy, unit_dispatch, unit_arrive, receipt, dispatch_receipt
+      FROM orders
+      WHERE event = ${data.event} AND product_id = ${data.productId}
+        AND (unit_buy IS NULL OR unit_buy < unit)
+      ORDER BY id ASC
+    `,
+    db`
+      SELECT id, unit_buy, unit_dispatch, unit_arrive
+      FROM excess_purchase
+      WHERE items = ${data.productName} AND reason NOT IN ('broken', 'missing') AND unit_buy > 0
+      ORDER BY (event = ${data.event}) DESC, id ASC
+    `,
+    fetchPaidStatusMap([data.event]),
+  ])
+
+  const orders = (orderRows as Record<string, unknown>[])
+    .map((r) => ({
+      id: r.id as number,
+      customer: r.customer as string,
+      unit: r.unit as number,
+      unitBuy: (r.unit_buy as number) ?? 0,
+      unitDispatch: (r.unit_dispatch as number) ?? 0,
+      unitArrive: (r.unit_arrive as number) ?? 0,
+      receipt: (r.receipt as string) ?? "",
+      dispatchReceipt: (r.dispatch_receipt as string) ?? "",
+    }))
+    .sort(compareOrderPriority(data.event, statusMap))
+
+  const excess = (excessRows as Record<string, unknown>[]).map((r) => ({
+    id: r.id as number,
+    unitBuy: r.unit_buy as number,
+    unitDispatch: r.unit_dispatch as number | null,
+    unitArrive: r.unit_arrive as number | null,
+  }))
+
+  const origUnitArrive = new Map(orders.map((o) => [o.id, o.unitArrive]))
+  const origUnitDispatch = new Map(orders.map((o) => [o.id, o.unitDispatch]))
+  const workingUnitBuy = new Map(orders.map((o) => [o.id, o.unitBuy]))
+  const updates = new Map<number, {
+    customer: string
+    oldUnitBuy: number
+    unitBuy: number
+    receipt: string
+    dispatchReceipt: string
+    arriveDelta: number
+    dispatchDelta: number
+  }>()
+  const excessToDelete: number[] = []
+  const excessToUpdate: { rowNumber: number; unitBuy: number; unitDispatch: number | null; unitArrive: number | null }[] = []
+
+  let remainingQty = data.qty
+
+  for (const src of excess) {
+    if (remainingQty <= 0) break
+    let excessBudget = Math.min(src.unitBuy, remainingQty)
+    let remainingDispatch = src.unitDispatch ?? 0
+    let remainingArrive = src.unitArrive ?? 0
+    let consumed = 0
+
+    for (const order of orders) {
+      if (excessBudget <= 0) break
+      const current = workingUnitBuy.get(order.id)!
+      const cap = order.unit - current
+      if (cap <= 0) continue
+      const allocate = Math.min(cap, excessBudget)
+      const dispatchGive = Math.min(allocate, remainingDispatch)
+      const arriveGive = Math.min(allocate, remainingArrive)
+      remainingDispatch -= dispatchGive
+      remainingArrive -= arriveGive
+
+      const prev = updates.get(order.id)
+      const existingReceipt = prev ? prev.receipt : order.receipt
+      const combinedReceipt = data.receipt
+        ? (existingReceipt ? `${existingReceipt}, ${data.receipt}` : data.receipt)
+        : existingReceipt
+
+      updates.set(order.id, {
+        customer: order.customer,
+        oldUnitBuy: prev?.oldUnitBuy ?? current,
+        unitBuy: current + allocate,
+        receipt: combinedReceipt,
+        dispatchReceipt: prev?.dispatchReceipt ?? order.dispatchReceipt,
+        arriveDelta: (prev?.arriveDelta ?? 0) + arriveGive,
+        dispatchDelta: (prev?.dispatchDelta ?? 0) + dispatchGive,
+      })
+      workingUnitBuy.set(order.id, current + allocate)
+      excessBudget -= allocate
+      consumed += allocate
+      remainingQty -= allocate
+    }
+
+    if (consumed > 0) {
+      const newExcessUnitBuy = src.unitBuy - consumed
+      if (newExcessUnitBuy <= 0) {
+        excessToDelete.push(src.id)
+      } else {
+        excessToUpdate.push({
+          rowNumber: src.id,
+          unitBuy: newExcessUnitBuy,
+          unitDispatch: remainingDispatch > 0 ? remainingDispatch : null,
+          unitArrive: remainingArrive > 0 ? remainingArrive : null,
+        })
+      }
+    }
+  }
+
+  const entries = Array.from(updates.entries())
+  await bulkUpdatePurchase(
+    entries.map(([rowNumber, d]) => ({ rowNumber, unitBuy: d.unitBuy, receipt: d.receipt })),
+    db,
+  )
+  await bulkUpdateArrive(
+    entries.map(([rowNumber, d]) => ({ rowNumber, unitArrive: (origUnitArrive.get(rowNumber) ?? 0) + d.arriveDelta })),
+    db,
+  )
+  await bulkUpdateDispatch(
+    entries.map(([rowNumber, d]) => ({
+      rowNumber,
+      unitDispatch: (origUnitDispatch.get(rowNumber) ?? 0) + d.dispatchDelta,
+      dispatchReceipt: d.dispatchReceipt,
+    })),
+    db,
+  )
+  for (const u of excessToUpdate) {
+    await updateExcessRowRemaining(u.rowNumber, { unitBuy: u.unitBuy, unitDispatch: u.unitDispatch, unitArrive: u.unitArrive }, db)
+  }
+  for (const id of excessToDelete) await deleteExcessRow(id, db)
+
+  return {
+    filled: entries.map(([rowNumber, d]) => ({ rowNumber, customer: d.customer, oldUnitBuy: d.oldUnitBuy, unitBuy: d.unitBuy })),
+    applied: data.qty - remainingQty,
+    remainder: remainingQty,
+  }
+}
+
+/**
+ * Write back an excess row's remaining unit_buy after a partial apply, along
+ * with whatever's left of its own unit_dispatch/unit_arrive — so the row's
+ * remaining units don't keep claiming a dispatch/arrival level that was
+ * actually given away to the orders it was just applied to.
+ */
+export async function updateExcessRowRemaining(
+  rowNumber: number,
+  data: { unitBuy: number; unitDispatch: number | null; unitArrive: number | null },
+  db: DBExecutor = sql,
+): Promise<void> {
   await db`
-    UPDATE excess_purchase SET unit_buy = ${unitBuy}, updated_at = NOW()
+    UPDATE excess_purchase SET
+      unit_buy = ${data.unitBuy}, unit_dispatch = ${data.unitDispatch}, unit_arrive = ${data.unitArrive},
+      updated_at = NOW()
     WHERE id = ${rowNumber}
   `
 }

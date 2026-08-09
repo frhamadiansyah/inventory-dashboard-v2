@@ -8,7 +8,7 @@ import {
   bulkUpdateArrive,
   bulkUpdateDispatch,
   deleteExcessRow,
-  updateExcessRowUnitBuy,
+  updateExcessRowRemaining,
   appendExcessPurchase,
   withActor,
 } from "@/lib/db"
@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
 
     const results: ItemResult[] = []
     const excessToDelete: number[] = []
-    const excessToUpdate: { rowNumber: number; unitBuy: number }[] = []
+    const excessToUpdate: { rowNumber: number; unitBuy: number; unitDispatch: number | null; unitArrive: number | null }[] = []
 
     for (const excessRow of excessRows) {
       const eligible = formRows
@@ -132,7 +132,12 @@ export async function POST(req: NextRequest) {
       if (remaining <= 0) {
         excessToDelete.push(excessRow.rowNumber)
       } else {
-        excessToUpdate.push({ rowNumber: excessRow.rowNumber, unitBuy: remaining })
+        excessToUpdate.push({
+          rowNumber: excessRow.rowNumber,
+          unitBuy: remaining,
+          unitDispatch: remainingDispatch > 0 ? remainingDispatch : null,
+          unitArrive: remainingArrive > 0 ? remainingArrive : null,
+        })
       }
     }
 
@@ -169,8 +174,8 @@ export async function POST(req: NextRequest) {
     })
 
     // 2. Update partially-consumed excess rows (before deletes shift row numbers)
-    for (const { rowNumber, unitBuy } of excessToUpdate) {
-      await withActor(session.user.email, (tx) => updateExcessRowUnitBuy(rowNumber, unitBuy, tx))
+    for (const { rowNumber, unitBuy, unitDispatch, unitArrive } of excessToUpdate) {
+      await withActor(session.user.email, (tx) => updateExcessRowRemaining(rowNumber, { unitBuy, unitDispatch, unitArrive }, tx))
     }
 
     // 3. Delete fully-consumed excess rows highest-first so lower indices stay valid

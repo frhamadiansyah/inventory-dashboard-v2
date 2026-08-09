@@ -526,7 +526,7 @@ export default function DispatchListClient() {
                   <td className="px-4 py-2.5 text-right whitespace-nowrap">
                     <span className="tabular-nums font-bold text-foreground">{row.item.totalUnits}</span>
                     {row.item.totalUnits < row.item.totalOriginal && (
-                      <span className="text-xs text-gray-400 font-normal tabular-nums" title="Partially dispatched">
+                      <span className="text-gray-400 font-normal tabular-nums" title="Partially dispatched">
                         {" "}/ {row.item.totalOriginal}
                       </span>
                     )}
@@ -538,8 +538,8 @@ export default function DispatchListClient() {
                       className="text-gray-400 hover:text-green-600 transition-colors"
                     >
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" />
-                        <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
+                        <line x1="22" y1="2" x2="11" y2="13" />
+                        <polygon points="22 2 15 22 11 13 2 9 22 2" />
                       </svg>
                     </button>
                   </td>
@@ -604,10 +604,10 @@ export default function DispatchListClient() {
                           <div className="text-sm font-bold tabular-nums whitespace-nowrap text-foreground">
                             {item.totalUnits}
                             {item.totalUnits < item.totalOriginal && (
-                              <span className="text-xs text-gray-400 font-normal" title="Partially dispatched"> / {item.totalOriginal}</span>
+                              <span className="text-gray-400 font-normal" title="Partially dispatched"> / {item.totalOriginal}</span>
                             )}
                           </div>
-                          <button type="button" onClick={() => setDispatchingItem(item)} aria-label="Mark dispatched" className="w-9 h-9 rounded-lg border border-cream-border text-brand flex items-center justify-center shrink-0 active:bg-green-50 active:text-green-700 active:border-green-200"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" /><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" /></svg></button>
+                          <button type="button" onClick={() => setDispatchingItem(item)} aria-label="Mark dispatched" className="w-9 h-9 rounded-lg border border-cream-border text-brand flex items-center justify-center shrink-0 active:bg-green-50 active:text-green-700 active:border-green-200"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg></button>
                         </div>
                     ))}
                   </div>

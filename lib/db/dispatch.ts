@@ -173,30 +173,35 @@ export async function getDispatchList(event?: string): Promise<DispatchListItem[
 export async function getExcessDispatchPending(event?: string): Promise<ExcessTransitItem[]> {
   const rows = event
     ? await sql`
-        SELECT id, event, items, reason, unit_buy,
-               COALESCE(unit_dispatch, 0) AS unit_dispatch,
-               COALESCE(unit_arrive, 0) AS unit_arrive,
-               receipt
-        FROM excess_purchase
-        WHERE unit_buy IS NOT NULL
-          AND (unit_dispatch IS NULL OR unit_dispatch < unit_buy)
-          AND event = ${event}
-        ORDER BY id ASC
+        WITH product_store AS (SELECT name, MIN(store) AS store FROM products GROUP BY name)
+        SELECT e.id, e.event, e.items, e.reason, e.unit_buy,
+               COALESCE(e.unit_dispatch, 0) AS unit_dispatch,
+               COALESCE(e.unit_arrive, 0) AS unit_arrive,
+               e.receipt, COALESCE(ps.store, '') AS store
+        FROM excess_purchase e
+        LEFT JOIN product_store ps ON ps.name = e.items
+        WHERE e.unit_buy IS NOT NULL
+          AND (e.unit_dispatch IS NULL OR e.unit_dispatch < e.unit_buy)
+          AND e.event = ${event}
+        ORDER BY e.id ASC
       `
     : await sql`
-        SELECT id, event, items, reason, unit_buy,
-               COALESCE(unit_dispatch, 0) AS unit_dispatch,
-               COALESCE(unit_arrive, 0) AS unit_arrive,
-               receipt
-        FROM excess_purchase
-        WHERE unit_buy IS NOT NULL
-          AND (unit_dispatch IS NULL OR unit_dispatch < unit_buy)
-        ORDER BY id ASC
+        WITH product_store AS (SELECT name, MIN(store) AS store FROM products GROUP BY name)
+        SELECT e.id, e.event, e.items, e.reason, e.unit_buy,
+               COALESCE(e.unit_dispatch, 0) AS unit_dispatch,
+               COALESCE(e.unit_arrive, 0) AS unit_arrive,
+               e.receipt, COALESCE(ps.store, '') AS store
+        FROM excess_purchase e
+        LEFT JOIN product_store ps ON ps.name = e.items
+        WHERE e.unit_buy IS NOT NULL
+          AND (e.unit_dispatch IS NULL OR e.unit_dispatch < e.unit_buy)
+        ORDER BY e.id ASC
       `
   return rows.map((r) => ({
     rowNumber: r.id as number,
     event: r.event as string,
     items: r.items as string,
+    store: r.store as string,
     reason: r.reason as ExcessReason,
     unitBuy: r.unit_buy as number,
     unitDispatch: r.unit_dispatch as number,
