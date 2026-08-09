@@ -622,7 +622,8 @@ export async function bulkUpdateDispatch(updates: DispatchUpdate[], db: DBExecut
 
 export async function getExcessPurchaseRows(): Promise<ExcessRow[]> {
   const rows = await sql`
-    SELECT id, event, items, unit_buy, receipt, reason, expected_item, created_at, updated_at
+    SELECT id, event, items, unit_buy, receipt, reason, expected_item,
+           unit_dispatch, unit_arrive, dispatch_receipt, created_at, updated_at
     FROM excess_purchase ORDER BY id ASC
   `
   return rows.map((r) => ({
@@ -633,6 +634,9 @@ export async function getExcessPurchaseRows(): Promise<ExcessRow[]> {
     receipt: r.receipt ?? "",
     reason: (r.reason ?? "overbuy") as ExcessReason,
     expectedItem: r.expected_item ?? "",
+    unitDispatch: r.unit_dispatch,
+    unitArrive: r.unit_arrive,
+    dispatchReceipt: r.dispatch_receipt ?? "",
     createdAt: tsToString(r.created_at),
     updatedAt: tsToString(r.updated_at),
   }))
@@ -647,6 +651,9 @@ function mapExcessRow(r: Record<string, unknown>): ExcessRow {
     receipt: (r.receipt as string) ?? "",
     reason: ((r.reason as string) ?? "overbuy") as ExcessReason,
     expectedItem: (r.expected_item as string) ?? "",
+    unitDispatch: r.unit_dispatch as number | null,
+    unitArrive: r.unit_arrive as number | null,
+    dispatchReceipt: (r.dispatch_receipt as string) ?? "",
     createdAt: tsToString(r.created_at as Date | null),
     updatedAt: tsToString(r.updated_at as Date | null),
     price: r.price != null ? Number(r.price) : null,
@@ -725,7 +732,8 @@ export async function getExcessPurchasePaginated(opts: {
 
   const dataRows = await sql.unsafe(
     `WITH product_price AS (SELECT name, AVG(price) AS price FROM products GROUP BY name)
-     SELECT e.id, e.event, e.items, e.unit_buy, e.receipt, e.reason, e.expected_item, e.created_at, e.updated_at, pp.price
+     SELECT e.id, e.event, e.items, e.unit_buy, e.receipt, e.reason, e.expected_item,
+            e.unit_dispatch, e.unit_arrive, e.dispatch_receipt, e.created_at, e.updated_at, pp.price
      FROM excess_purchase e
      LEFT JOIN product_price pp ON pp.name = e.items
      ${where}
@@ -1029,6 +1037,13 @@ export async function appendExcessPurchase(
         receipt: r.receipt,
         reason: r.reason ?? "overbuy",
         expected_item: r.expectedItem ?? null,
+        // Every current caller (wrong-product, broken, overship, manual "Add
+        // Inventory") is stock already physically in hand at insert time — the
+        // in-transit case goes through returnOrderUnitsToExcess instead, which
+        // sets these explicitly. Defaulting to fully-arrived here matches this
+        // table's pre-existing "ready stock" behavior for these paths exactly.
+        unit_dispatch: r.unitBuy,
+        unit_arrive: r.unitBuy,
       }))
     )}
   `
