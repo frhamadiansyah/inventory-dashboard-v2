@@ -3,7 +3,7 @@
 import { displayIg, fmt } from "@/lib/format"
 import TableSkeleton from "@/components/TableSkeleton"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { ArrivalListItem, ArrivalListOrder } from "@/lib/db"
+import type { ArrivalListItem, ArrivalListOrder, ExcessTransitItem } from "@/lib/db"
 import type { PaidStatus } from "@/lib/db/shopping-list"
 import { useSheetOptions } from "@/hooks/useSheetOptions"
 import { allocateFifo } from "@/lib/fifo-fill"
@@ -13,6 +13,7 @@ import EventSelect from "@/components/EventSelect"
 import SearchableSelect from "@/components/SearchableSelect"
 import SearchInput from "@/components/SearchInput"
 import SelectionActionBar from "@/components/SelectionActionBar"
+import OverbuyTransitList from "@/components/OverbuyTransitList"
 
 function computeFill(orders: ArrivalListOrder[], quantityArrived: number) {
   const { allocations, unallocated, excess } = allocateFifo(orders, (o) => o.pending, quantityArrived)
@@ -241,6 +242,7 @@ function CustomerBadge({ orders }: { orders: { customer: string; qty: number; pa
 export default function ArrivalListClient() {
   const options = useSheetOptions()
   const [items, setItems] = useState<ArrivalListItem[]>([])
+  const [excessPending, setExcessPending] = useState<ExcessTransitItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [selectedEvent, setSelectedEvent] = useState("")
@@ -260,10 +262,11 @@ export default function ArrivalListClient() {
     const url = event
       ? `/api/sheets/arrival-list?event=${encodeURIComponent(event)}`
       : "/api/sheets/arrival-list"
-    fetchJson<{ items: ArrivalListItem[] }>(url)
+    fetchJson<{ items: ArrivalListItem[]; excessPending?: ExcessTransitItem[] }>(url)
       .then((data) => {
         const items = data.items ?? []
         setItems(items)
+        setExcessPending(data.excessPending ?? [])
         // Stores start collapsed (event headers + store headers visible, items
         // hidden). Only on an explicit load — a silent post-mutation refresh
         // leaves whatever the user has expanded alone.
@@ -509,10 +512,10 @@ export default function ArrivalListClient() {
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-right">
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
                     <span className="tabular-nums font-bold text-foreground">{row.item.totalPending}</span>
                     {row.item.totalPending < row.item.totalBought && (
-                      <span className="text-xs text-gray-400 font-normal tabular-nums" title="Partially arrived">
+                      <span className="text-gray-400 font-normal tabular-nums" title="Partially arrived">
                         {" "}/ {row.item.totalBought}
                       </span>
                     )}
@@ -584,7 +587,7 @@ export default function ArrivalListClient() {
                         <div className="text-sm font-bold tabular-nums whitespace-nowrap text-foreground">
                           {item.totalPending}
                           {item.totalPending < item.totalBought && (
-                            <span className="text-xs text-gray-400 font-normal" title="Partially arrived"> / {item.totalBought}</span>
+                            <span className="text-gray-400 font-normal" title="Partially arrived"> / {item.totalBought}</span>
                           )}
                         </div>
                         <button type="button" onClick={() => setArrivingItem(item)} aria-label="Mark as arrived" className="w-9 h-9 rounded-lg border border-cream-border text-brand flex items-center justify-center shrink-0 active:bg-blue-50 active:text-blue-700 active:border-blue-200">
@@ -603,6 +606,12 @@ export default function ArrivalListClient() {
           )
         })}
       </div>
+
+      <OverbuyTransitList
+        items={excessPending}
+        stage="arrive"
+        onMarked={() => fetchItems(selectedEvent || undefined, true)}
+      />
 
       {arrivingItem && (
         <ArriveModal

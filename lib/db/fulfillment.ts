@@ -3,7 +3,7 @@ import sql from "../db-pool"
 import { normalizeId, normalizeCustomer, tsToString } from "./helpers"
 import { allocateFifo } from "../fifo-fill"
 import type { DBExecutor } from "./actor"
-import type { ShipOrderLine, ShipCustomer, ShipStatus, ShipOrdersParams, ShipMergedParams, ShipMergedResult, ShippingRecord, CustomerDetail } from "./types"
+import type { ShipOrderLine, ShipCustomer, ShipStatus, ShipOrdersParams, ShipMergedParams, ShipMergedResult, ShippingRecord, CustomerDetail, ExcessTransitItem, ExcessReason } from "./types"
 import { getPaymentStatus, type PaymentStatus } from "./finance"
 import { fetchPaidStatusMap, compareOrderPriority, type PaidStatus } from "./shopping-list"
 import { appendExcessPurchase, reduceOrderRefundOnly } from "./orders"
@@ -623,6 +623,52 @@ export async function getArrivalList(event?: string): Promise<ArrivalListItem[]>
   }
 
   return items
+}
+
+// ─── Excess (overbuy) Arrival Pending ──────────────────────────────────────
+//
+// excess_purchase rows dispatched but not yet arrived. Mirrors
+// getExcessDispatchPending one stage later — see lib/db/dispatch.ts.
+
+export async function getExcessArrivalPending(event?: string): Promise<ExcessTransitItem[]> {
+  const rows = event
+    ? await sql`
+        WITH product_store AS (SELECT name, MIN(store) AS store FROM products GROUP BY name)
+        SELECT e.id, e.event, e.items, e.reason, e.unit_buy,
+               COALESCE(e.unit_dispatch, 0) AS unit_dispatch,
+               COALESCE(e.unit_arrive, 0) AS unit_arrive,
+               e.receipt, COALESCE(ps.store, '') AS store
+        FROM excess_purchase e
+        LEFT JOIN product_store ps ON ps.name = e.items
+        WHERE e.unit_dispatch IS NOT NULL
+          AND (e.unit_arrive IS NULL OR e.unit_arrive < e.unit_dispatch)
+          AND e.event = ${event}
+        ORDER BY e.id ASC
+      `
+    : await sql`
+        WITH product_store AS (SELECT name, MIN(store) AS store FROM products GROUP BY name)
+        SELECT e.id, e.event, e.items, e.reason, e.unit_buy,
+               COALESCE(e.unit_dispatch, 0) AS unit_dispatch,
+               COALESCE(e.unit_arrive, 0) AS unit_arrive,
+               e.receipt, COALESCE(ps.store, '') AS store
+        FROM excess_purchase e
+        LEFT JOIN product_store ps ON ps.name = e.items
+        WHERE e.unit_dispatch IS NOT NULL
+          AND (e.unit_arrive IS NULL OR e.unit_arrive < e.unit_dispatch)
+        ORDER BY e.id ASC
+      `
+  return rows.map((r) => ({
+    rowNumber: r.id as number,
+    event: r.event as string,
+    items: r.items as string,
+    store: r.store as string,
+    reason: r.reason as ExcessReason,
+    unitBuy: r.unit_buy as number,
+    unitDispatch: r.unit_dispatch as number,
+    unitArrive: r.unit_arrive as number,
+    pending: (r.unit_dispatch as number) - (r.unit_arrive as number),
+    receipt: (r.receipt as string) ?? "",
+  }))
 }
 
 // ─── Received Report ───────────────────────────────────────────────────────
