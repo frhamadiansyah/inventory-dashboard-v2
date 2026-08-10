@@ -35,8 +35,6 @@ const inputCls =
   "border border-cream-border rounded-lg px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-colors"
 const btnCls =
   "px-3 py-1.5 rounded-lg border border-cream-border text-sm text-gray-600 hover:border-brand hover:text-brand disabled:opacity-50 transition-colors"
-const iconBtnCls =
-  "w-7 h-7 shrink-0 inline-flex items-center justify-center rounded-md border border-cream-border text-gray-400 hover:border-brand hover:text-brand disabled:opacity-30 transition-colors"
 
 const fmt = (n: number) => n.toLocaleString("id-ID")
 const fmt2 = (n: number) => (Math.round(n * 100) / 100).toLocaleString("id-ID")
@@ -311,7 +309,12 @@ function ScopeBrackets({
                   wrapClassName="flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0"
                 />
                 <span className="hidden md:inline text-xs text-gray-400 shrink-0 ml-2">Fee</span>
-                <div className="flex rounded-lg border border-cream-border overflow-hidden text-xs font-medium flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0">
+                {/* Fixed, not flex-1 like From/Fee beside it: on mobile, splitting the row
+                    three ways evenly left From too narrow to read its own value once it
+                    grew a "Rp" prefix. text-sm (not text-xs) so its py-1.5 matches the
+                    MoneyInput's own py-1.5 + text-sm exactly, same height as the boxes
+                    beside it. */}
+                <div className="flex rounded-lg border border-cream-border overflow-hidden text-sm font-medium shrink-0 w-16 md:w-28">
                   <button
                     type="button"
                     onClick={() => setBracket(i, { feeMode: "fixed" })}
@@ -337,15 +340,25 @@ function ScopeBrackets({
                   name={`bracket-${scope}-${i}-fee`}
                   wrapClassName="flex-1 min-w-0 md:flex-none md:w-28 md:shrink-0"
                 />
+                {/* Mobile: bare light-grey trash icon, no frame — the bordered × box read
+                    as one more input in an already-tight row. Already flush right: From
+                    and Fee beside it are both flex-1, so they claim all the row's free
+                    space before this shrink-0 button gets any. Desktop keeps the bordered
+                    × box. */}
                 <button
                   type="button"
                   onClick={() => {
                     setDraft((d) => d.filter((_, j) => j !== i))
                     setDirty(true)
                   }}
-                  className={iconBtnCls}
+                  className="shrink-0 inline-flex items-center justify-center w-8 h-[34px] text-gray-300 hover:text-gray-400 transition-colors md:w-7 md:h-7 md:text-gray-400 md:border md:border-cream-border md:rounded-md md:hover:border-brand md:hover:text-brand disabled:opacity-30"
                   aria-label="Remove bracket"
-                >×</button>
+                >
+                  <svg className="md:hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M10 11v6" /><path d="M14 11v6" />
+                  </svg>
+                  <span className="hidden md:inline">×</span>
+                </button>
               </div>
             )
           })}

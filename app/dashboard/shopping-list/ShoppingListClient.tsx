@@ -258,6 +258,11 @@ export default function ShoppingListClient() {
   const [purchaseOpen, setPurchaseOpen] = useState(false)
   const [collapsedEvents, setCollapsedEvents] = useState<Set<string>>(new Set())
   const [collapsedStores, setCollapsedStores] = useState<Set<string>>(new Set())
+  // Desktop's own collapse state — separate from the mobile cards' above, which start
+  // every store collapsed. Desktop stays fully expanded by default (never seeded), since
+  // a spreadsheet-style table reads better open than the phone card list does.
+  const [collapsedDesktopEvents, setCollapsedDesktopEvents] = useState<Set<string>>(new Set())
+  const [collapsedDesktopStores, setCollapsedDesktopStores] = useState<Set<string>>(new Set())
   // Multi-select for marking several items purchased under one shared receipt.
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -331,6 +336,23 @@ export default function ShoppingListClient() {
     })
   }
 
+  function toggleDesktopEvent(event: string) {
+    setCollapsedDesktopEvents((prev) => {
+      const next = new Set(prev)
+      next.has(event) ? next.delete(event) : next.add(event)
+      return next
+    })
+  }
+
+  function toggleDesktopStore(event: string, store: string) {
+    const key = `${event}|${store}`
+    setCollapsedDesktopStores((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
   const filteredItems = useMemo(() => {
     if (!search.trim()) return items
     const q = search.toLowerCase()
@@ -343,9 +365,11 @@ export default function ShoppingListClient() {
   }, [items, search])
 
   const grouped = useMemo(() => groupItems(filteredItems), [filteredItems])
+  // Desktop-only state (see above) — mobile's own render loop reads collapsedEvents/
+  // collapsedStores directly, not through `rows`.
   const rows = useMemo(
-    () => buildRows(grouped, collapsedEvents, collapsedStores),
-    [grouped, collapsedEvents, collapsedStores],
+    () => buildRows(grouped, collapsedDesktopEvents, collapsedDesktopStores),
+    [grouped, collapsedDesktopEvents, collapsedDesktopStores],
   )
 
   // Select-all over the currently-visible (search-filtered) items.
@@ -448,7 +472,7 @@ export default function ShoppingListClient() {
                   <tr key={`${row.event}~collapsed`} className="border-b border-cream-border">
                     <td colSpan={5} className="px-4 py-2.5">
                       <div className="flex items-center gap-2">
-                        <CollapseBtn collapsed onClick={() => toggleEvent(row.event)} />
+                        <CollapseBtn collapsed onClick={() => toggleDesktopEvent(row.event)} />
                         <span className="font-medium text-foreground">{row.event}</span>
                         <span className="text-xs text-gray-400">{row.totalItems} items</span>
                       </div>
@@ -463,14 +487,14 @@ export default function ShoppingListClient() {
                     {row.showEvent && (
                       <td rowSpan={row.eventRowSpan} className="px-4 py-2.5 align-top border-r border-cream-border">
                         <div className="flex items-center gap-2 pt-0.5">
-                          <CollapseBtn collapsed={false} onClick={() => toggleEvent(row.event)} />
+                          <CollapseBtn collapsed={false} onClick={() => toggleDesktopEvent(row.event)} />
                           <span className="font-medium text-foreground">{row.event}</span>
                         </div>
                       </td>
                     )}
                     <td colSpan={4} className="px-4 py-2.5 bg-gray-50/40">
                       <div className="flex items-center gap-2">
-                        <CollapseBtn collapsed onClick={() => toggleStore(row.event, row.store)} />
+                        <CollapseBtn collapsed onClick={() => toggleDesktopStore(row.event, row.store)} />
                         <span className="text-gray-600">{row.store}</span>
                         <span className="text-xs text-gray-400">{row.totalItems} items</span>
                       </div>
@@ -487,7 +511,7 @@ export default function ShoppingListClient() {
                   {row.showEvent && (
                     <td rowSpan={row.eventRowSpan} className="px-4 py-2.5 align-top border-r border-cream-border">
                       <div className="flex items-center gap-2 pt-0.5">
-                        <CollapseBtn collapsed={false} onClick={() => toggleEvent(row.event)} />
+                        <CollapseBtn collapsed={false} onClick={() => toggleDesktopEvent(row.event)} />
                         <span className="font-medium text-foreground">{row.event}</span>
                       </div>
                     </td>
@@ -495,7 +519,7 @@ export default function ShoppingListClient() {
                   {row.showStore && (
                     <td rowSpan={row.storeRowSpan} className="px-4 py-2.5 align-top border-r border-cream-border">
                       <div className="flex items-center gap-2 pt-0.5">
-                        <CollapseBtn collapsed={false} onClick={() => toggleStore(row.event, row.store)} />
+                        <CollapseBtn collapsed={false} onClick={() => toggleDesktopStore(row.event, row.store)} />
                         <span className="text-gray-600">{row.store}</span>
                       </div>
                     </td>

@@ -701,7 +701,11 @@ export default function ProductsPageClient() {
           <div className="rounded-xl border border-cream-border bg-white p-8 text-center text-sm text-gray-400">{fetchState.loading ? "Loading…" : "No products"}</div>
         )}
         {data.map((p) => {
-          const abroad = isAbroad(p)
+          // Not isAbroad(p): that gates the desktop-table's overseas-only columns
+          // (profit %, operational/packing fee). This is broader — any product with a
+          // country has a real currency + valas to show, which is also true of both Rate
+          // methods and valas-mode Tier/Flat Fee, not just Profit Margin.
+          const hasValas = p.countryId != null
           return (
             <div
               key={p.id}
@@ -723,7 +727,7 @@ export default function ProductsPageClient() {
               <div className="flex items-center justify-between gap-3 mt-2.5 pt-2.5 border-t border-cream-border">
                 <span className="text-xs text-gray-400 min-w-0 truncate">
                   {[
-                    abroad ? (countries.find((c) => c.id === p.countryId)?.currency || "—") + (p.valas ? ` ${fmt(p.valas)}` : "") : "",
+                    hasValas ? (countries.find((c) => c.id === p.countryId)?.currency || "—") + (p.valas ? ` ${fmt(p.valas)}` : "") : "",
                     p.gram ? `${fmt(p.gram)} GR` : "",
                   ].filter(Boolean).join(" · ")}
                 </span>

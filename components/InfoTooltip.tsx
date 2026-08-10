@@ -2,25 +2,47 @@
 
 import { useEffect, useRef, useState } from "react"
 
+const POPUP_WIDTH = 224 // w-56
+
 // Click/tap-to-toggle rather than hover-only, so it works the same on touch as on desktop.
 export default function InfoTooltip({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({})
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const popupRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
     function onPointerDown(e: PointerEvent) {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+      const target = e.target as Node
+      if (!triggerRef.current?.contains(target) && !popupRef.current?.contains(target)) {
+        setOpen(false)
+      }
     }
     document.addEventListener("pointerdown", onPointerDown)
     return () => document.removeEventListener("pointerdown", onPointerDown)
   }, [open])
 
+  function handleToggle() {
+    if (!open && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect()
+      // Anchored to the trigger's right edge (right-0) used to clip off-screen whenever the
+      // icon sat anywhere near the left of a narrow (mobile) viewport, since the popup only
+      // ever extended further left from there. Clamping a fixed-position left offset within
+      // the viewport, instead of anchoring to a CSS edge, keeps it on-screen regardless of
+      // where the icon actually is.
+      const left = Math.min(Math.max(rect.right - POPUP_WIDTH, 8), window.innerWidth - POPUP_WIDTH - 8)
+      setPopupStyle({ position: "fixed", top: rect.bottom + 4, left })
+    }
+    setOpen((o) => !o)
+  }
+
   return (
-    <div className="relative inline-block" ref={ref}>
+    <div className="relative inline-block">
       <button
+        ref={triggerRef}
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={handleToggle}
         aria-label="More info"
         className="flex items-center justify-center w-4 h-4 rounded-full text-gray-400 hover:text-brand transition-colors"
       >
@@ -31,7 +53,11 @@ export default function InfoTooltip({ text }: { text: string }) {
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-20 w-56 rounded-lg border border-cream-border bg-white shadow-lg p-2.5 text-[10px] text-gray-500 leading-relaxed">
+        <div
+          ref={popupRef}
+          style={{ ...popupStyle, width: POPUP_WIDTH }}
+          className="z-20 rounded-lg border border-cream-border bg-white shadow-lg p-2.5 text-[10px] text-gray-500 leading-relaxed"
+        >
           {text}
         </div>
       )}
