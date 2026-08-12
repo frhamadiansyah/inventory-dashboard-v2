@@ -498,6 +498,9 @@ export interface ArrivalListOrder {
   unitArrive: number
   pending: number
   paidStatus: PaidStatus
+  /** Tracking ref this order's units were dispatched under (see the Dispatch List's
+   *  "Inventory receipt" field). Empty when dispatched without one. */
+  dispatchReceipt: string
 }
 
 export interface ArrivalListItem {
@@ -547,7 +550,8 @@ export async function getArrivalList(event?: string): Promise<ArrivalListItem[]>
             'customer', o.customer,
             'unitBuy', o.unit_dispatch,
             'unitArrive', COALESCE(o.unit_arrive, 0),
-            'pending', o.unit_dispatch - COALESCE(o.unit_arrive, 0)
+            'pending', o.unit_dispatch - COALESCE(o.unit_arrive, 0),
+            'dispatchReceipt', COALESCE(o.dispatch_receipt, '')
           ) ORDER BY o.customer, o.id) AS orders
         FROM orders o
         JOIN products p ON p.id = o.product_id
@@ -578,7 +582,8 @@ export async function getArrivalList(event?: string): Promise<ArrivalListItem[]>
             'customer', o.customer,
             'unitBuy', o.unit_dispatch,
             'unitArrive', COALESCE(o.unit_arrive, 0),
-            'pending', o.unit_dispatch - COALESCE(o.unit_arrive, 0)
+            'pending', o.unit_dispatch - COALESCE(o.unit_arrive, 0),
+            'dispatchReceipt', COALESCE(o.dispatch_receipt, '')
           ) ORDER BY o.customer, o.id) AS orders
         FROM orders o
         JOIN products p ON p.id = o.product_id

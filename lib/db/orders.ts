@@ -473,6 +473,18 @@ export async function updateOrderReceipt(
   `
 }
 
+export async function updateOrderDispatchReceipt(
+  rowNumber: number,
+  dispatchReceipt: string,
+  db: DBExecutor = sql,
+): Promise<void> {
+  await db`
+    UPDATE orders
+    SET dispatch_receipt = ${dispatchReceipt}, updated_at = NOW()
+    WHERE id = ${rowNumber}
+  `
+}
+
 export async function deleteFormRow(rowNumber: number, db: DBExecutor = sql): Promise<void> {
   await db`DELETE FROM orders WHERE id = ${rowNumber}`
 }

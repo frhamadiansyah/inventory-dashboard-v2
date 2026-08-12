@@ -354,7 +354,8 @@ export default function ArrivalListClient() {
       (i) =>
         i.productName.toLowerCase().includes(q) ||
         i.event.toLowerCase().includes(q) ||
-        (i.store ?? "").toLowerCase().includes(q),
+        (i.store ?? "").toLowerCase().includes(q) ||
+        i.orders.some((o) => o.dispatchReceipt.toLowerCase().includes(q)),
     )
   }, [items, search])
 
@@ -452,6 +453,7 @@ export default function ArrivalListClient() {
               <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-44">Event</th>
               <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-36">Store</th>
               <th className="text-left px-4 py-2.5 font-medium text-gray-500">Product</th>
+              <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-32">Receipt</th>
               <th className="text-right px-4 py-2.5 font-medium text-gray-500 w-14">Qty</th>
               <th className="px-4 py-2.5 w-10" />
             </tr>
@@ -459,7 +461,7 @@ export default function ArrivalListClient() {
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="text-center text-gray-400 py-12 text-sm">
+                <td colSpan={6} className="text-center text-gray-400 py-12 text-sm">
                   No items pending arrival
                 </td>
               </tr>
@@ -468,7 +470,7 @@ export default function ArrivalListClient() {
               if (row.type === "event-collapsed") {
                 return (
                   <tr key={`${row.event}~collapsed`} className="border-b border-cream-border">
-                    <td colSpan={5} className="px-4 py-2.5">
+                    <td colSpan={6} className="px-4 py-2.5">
                       <div className="flex items-center gap-2">
                         <CollapseBtn collapsed onClick={() => toggleDesktopEvent(row.event)} />
                         <span className="font-medium text-foreground">{row.event}</span>
@@ -490,7 +492,7 @@ export default function ArrivalListClient() {
                         </div>
                       </td>
                     )}
-                    <td colSpan={4} className="px-4 py-2.5 bg-gray-50/40">
+                    <td colSpan={5} className="px-4 py-2.5 bg-gray-50/40">
                       <div className="flex items-center gap-2">
                         <CollapseBtn collapsed onClick={() => toggleDesktopStore(row.event, row.store)} />
                         <span className="text-gray-600">{row.store}</span>
@@ -540,6 +542,19 @@ export default function ArrivalListClient() {
                         />
                       </div>
                     </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-gray-500">
+                    {(() => {
+                      const receipts = Array.from(
+                        new Set(row.item.orders.map((o) => o.dispatchReceipt).filter(Boolean)),
+                      )
+                      const text = receipts.length ? receipts.join(", ") : "—"
+                      return (
+                        <span className="block truncate" title={text}>
+                          {text}
+                        </span>
+                      )
+                    })()}
                   </td>
                   <td className="px-4 py-2.5 text-right whitespace-nowrap">
                     <span className="tabular-nums font-bold text-foreground">{row.item.totalPending}</span>

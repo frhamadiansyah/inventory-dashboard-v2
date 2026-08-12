@@ -26,23 +26,24 @@ function fmtNum(v: number | null): string {
 }
 
 // ---------------------------------------------------------------------------
-// Inline receipt cell (owner-only)
+// Inline text cell (owner-only) — used for both the purchase receipt and the
+// dispatch receipt columns.
 // ---------------------------------------------------------------------------
 
-function InlineReceipt({ row, onSave }: { row: FormRow; onSave: (row: FormRow, value: string) => void }) {
+function InlineTextCell({ value, onSave }: { value: string; onSave: (value: string) => void }) {
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(row.receipt)
+  const [draft, setDraft] = useState(value)
   const inputRef = useRef<HTMLInputElement>(null)
 
   function startEdit() {
-    setDraft(row.receipt)
+    setDraft(value)
     setEditing(true)
     setTimeout(() => inputRef.current?.select(), 0)
   }
 
   function commit() {
     setEditing(false)
-    if (draft !== row.receipt) onSave(row, draft)
+    if (draft !== value) onSave(draft)
   }
 
   if (editing) {
@@ -55,7 +56,7 @@ function InlineReceipt({ row, onSave }: { row: FormRow; onSave: (row: FormRow, v
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === "Enter") { e.currentTarget.blur() }
-          if (e.key === "Escape") { setDraft(row.receipt); setEditing(false) }
+          if (e.key === "Escape") { setDraft(value); setEditing(false) }
         }}
         className="w-full border border-brand rounded px-1.5 py-0.5 text-xs bg-white focus:outline-none"
       />
@@ -69,7 +70,7 @@ function InlineReceipt({ row, onSave }: { row: FormRow; onSave: (row: FormRow, v
       title="Click to edit"
       className="text-left w-full text-xs hover:text-brand transition-colors"
     >
-      {row.receipt || <span className="text-gray-300">—</span>}
+      {value || <span className="text-gray-300">—</span>}
     </button>
   )
 }
@@ -162,6 +163,21 @@ export default function FormRecordsTable({ role }: { role: Role | null }) {
     }
   }, [])
 
+  const handleSaveDispatchReceipt = useCallback(async (row: FormRow, value: string) => {
+    const previous = row.dispatchReceipt
+    setRows((prev) => prev.map((r) => r.rowNumber === row.rowNumber ? { ...r, dispatchReceipt: value } : r))
+    try {
+      const res = await fetch(`/api/sheets/duplicate-form/${row.rowNumber}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage: "dispatch_receipt_cell", value }),
+      })
+      if (!res.ok) throw new Error("Failed")
+    } catch {
+      setRows((prev) => prev.map((r) => r.rowNumber === row.rowNumber ? { ...r, dispatchReceipt: previous } : r))
+    }
+  }, [])
+
   // -- Column definitions --
   const columns: ColumnDef<FormRow, unknown>[] = useMemo(() => [
     {
@@ -208,8 +224,17 @@ export default function FormRecordsTable({ role }: { role: Role | null }) {
       size: 140,
       enableColumnFilter: false,
       cell: ({ row }) => isOwner
-        ? <InlineReceipt row={row.original} onSave={handleSaveReceipt} />
+        ? <InlineTextCell value={row.original.receipt} onSave={(v) => handleSaveReceipt(row.original, v)} />
         : <span className={row.original.receipt ? "" : "text-gray-400"}>{row.original.receipt || "—"}</span>,
+    },
+    {
+      accessorKey: "dispatchReceipt",
+      header: "Dispatch Receipt",
+      size: 140,
+      enableColumnFilter: false,
+      cell: ({ row }) => isOwner
+        ? <InlineTextCell value={row.original.dispatchReceipt} onSave={(v) => handleSaveDispatchReceipt(row.original, v)} />
+        : <span className={row.original.dispatchReceipt ? "" : "text-gray-400"}>{row.original.dispatchReceipt || "—"}</span>,
     },
     {
       accessorKey: "unitArrive",
@@ -266,7 +291,7 @@ export default function FormRecordsTable({ role }: { role: Role | null }) {
       cell: ({ getValue }) => <span className="text-gray-400 text-xs whitespace-nowrap">{getValue<string>() || "—"}</span>,
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [isOwner, handleSaveReceipt])
+  ], [isOwner, handleSaveReceipt, handleSaveDispatchReceipt])
 
   const renderMobileCard = useCallback((row: FormRow) => (
     <div className="rounded-xl border border-cream-border bg-white p-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)] flex flex-col gap-1.5">
@@ -282,15 +307,19 @@ export default function FormRecordsTable({ role }: { role: Role | null }) {
         <span>Ship <span className="font-medium text-foreground">{fmtNum(row.unitShip)}</span></span>
       </div>
       {isOwner ? (
-        <div className="pt-2.5 border-t border-cream-border mt-1">
-          <InlineReceipt row={row} onSave={handleSaveReceipt} />
+        <div className="pt-2.5 border-t border-cream-border mt-1 flex flex-col gap-1">
+          <InlineTextCell value={row.receipt} onSave={(v) => handleSaveReceipt(row, v)} />
+          <InlineTextCell value={row.dispatchReceipt} onSave={(v) => handleSaveDispatchReceipt(row, v)} />
         </div>
-      ) : row.receipt ? (
-        <div className="text-xs text-gray-500 pt-2.5 border-t border-cream-border mt-1">{row.receipt}</div>
+      ) : row.receipt || row.dispatchReceipt ? (
+        <div className="text-xs text-gray-500 pt-2.5 border-t border-cream-border mt-1 flex flex-col gap-0.5">
+          {row.receipt && <div>{row.receipt}</div>}
+          {row.dispatchReceipt && <div>{row.dispatchReceipt}</div>}
+        </div>
       ) : null}
     </div>
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ), [isOwner, handleSaveReceipt])
+  ), [isOwner, handleSaveReceipt, handleSaveDispatchReceipt])
 
   // -- Loading / error states --
   if (fetchState.loading && rows.length === 0) return <TableSkeleton />
@@ -316,6 +345,7 @@ export default function FormRecordsTable({ role }: { role: Role | null }) {
       renderMobileCard={renderMobileCard}
       initialVisibility={{
         receipt: false,
+        dispatchReceipt: false,
         unitArrive: false,
         unitShip: false,
         unitHold: false,
