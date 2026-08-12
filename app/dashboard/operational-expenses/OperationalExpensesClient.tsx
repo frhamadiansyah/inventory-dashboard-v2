@@ -841,14 +841,14 @@ function AddExpenseForm({
   const [adding, setAdding] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
 
-  // Duplicate: refill from the source row, but with a fresh date and unsettled
+  // Duplicate: refill from the source row, including its date, but unsettled
   // — it's a new expense, not the same payment recorded twice.
   useEffect(() => {
     if (!seed) return
     const r = seed.row
     setDraft({
       event: r.event,
-      expenseDate: todayIso(),
+      expenseDate: r.expenseDate,
       description: r.description,
       category: r.category,
       currency: inferCurrency(r, events),
