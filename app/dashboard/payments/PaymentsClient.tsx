@@ -899,18 +899,16 @@ function AddPaymentForm({
             <EventSelect value={event} onChange={(v) => { setEvent(v); setFeedback(null) }} events={options?.events ?? []} />
           </div>
         </div>
-        <div>
+        <div className="flex-1 min-w-[14rem]">
           <label className={LABEL}>Customer <span className="text-brand">*</span></label>
-          <div style={{ width: "10rem" }}>
-            <SearchableSelect
-              value={customer}
-              onChange={(v) => { setCustomer(v); setFeedback(null) }}
-              options={customerOptions}
-              placeholder="Customer..."
-              allowNewValue
-              searchMeta
-            />
-          </div>
+          <SearchableSelect
+            value={customer}
+            onChange={(v) => { setCustomer(v); setFeedback(null) }}
+            options={customerOptions}
+            placeholder="Customer..."
+            allowNewValue
+            searchMeta
+          />
         </div>
         <div>
           <label className={LABEL}>Amount <span className="text-brand">*</span></label>
@@ -932,9 +930,9 @@ function AddPaymentForm({
           <label className={LABEL}>Date</label>
           <input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} className={INPUT_CLASS_TALL} style={{ width: "9rem" }} />
         </div>
-        <div className="flex-1 min-w-[8rem]">
+        <div>
           <label className={LABEL}>Remarks</label>
-          <input type="text" value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Optional" className={INPUT_CLASS_TALL} />
+          <input type="text" value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Optional" className={INPUT_CLASS_TALL} style={{ width: "9rem" }} />
         </div>
         <div className="w-full flex justify-end gap-2">
           <button
