@@ -16,9 +16,13 @@ const isLocalDb = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(connectionString)
 const globalForDb = globalThis as unknown as { __dbPool?: ReturnType<typeof postgres> }
 
 const sql = globalForDb.__dbPool ?? postgres(connectionString, {
-  // Bumped from 5 → 10 because pages like the dashboard fan out 6 queries
-  // in parallel via Promise.all and could starve the pool with multiple tabs.
-  max: 10,
+  // Bumped 5 → 10 → 20: pages like the dashboard fan out 6 queries in parallel
+  // via Promise.all, so a couple of concurrent heavy page loads alone could
+  // saturate 10. A 2026-08-12 traffic burst queued past Railway's proxy
+  // timeout (10-20s+ p99, requests never even erroring — just queued waiting
+  // for a free connection) and came back as 502s. Supabase's transaction-mode
+  // pooler (port 6543) comfortably handles more than this on its own.
+  max: 20,
   // Keep pooled client connections warm for 5 min between bursts. At the old
   // 20s, quiet gaps closed connections constantly, and every reopen re-ran the
   // pooler auth (pgbouncer.get_auth) plus a driver type-introspection query —
