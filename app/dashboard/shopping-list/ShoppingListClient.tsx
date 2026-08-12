@@ -535,9 +535,9 @@ export default function ShoppingListClient() {
                           aria-label={`Select ${row.item.productName}`}
                         />
                       )}
-                      <div className="min-w-0">
-                        <div className="text-foreground">{row.item.productName}</div>
-                        <div className="flex items-center gap-1.5 text-xs text-gray-400 tabular-nums">
+                      <div className="flex items-baseline gap-1.5 min-w-0 flex-wrap">
+                        <span className="text-foreground">{row.item.productName}</span>
+                        <span className="flex items-center gap-1.5 text-xs text-gray-400 tabular-nums">
                           <CustomerBadge
                             orders={row.item.orders.map((o) => ({
                               customer: o.customer,
@@ -547,7 +547,7 @@ export default function ShoppingListClient() {
                           />
                           {" · "}Rp {fmt(row.item.price)}
                           {row.item.valas > 0 && ` · ${row.item.currency} ${fmt(row.item.valas)}`}
-                        </div>
+                        </span>
                       </div>
                     </div>
                   </td>
