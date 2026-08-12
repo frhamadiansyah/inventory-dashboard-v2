@@ -673,7 +673,7 @@ function EditPaymentModal({
   useModalDismiss(onClose)
 
   const customerOptions = useMemo(
-    () => (options?.customers ?? []).map((c) => ({ value: c, label: displayIg(c) })),
+    () => (options?.customers ?? []).map((c) => ({ value: c, label: displayIg(c), meta: options?.customerMobiles?.[c] || undefined })),
     [options],
   )
   const accountOptions = useMemo(
@@ -761,6 +761,7 @@ function EditPaymentModal({
               options={customerOptions}
               placeholder="Customer..."
               allowNewValue
+              searchMeta
             />
           </div>
           <div className="flex gap-3">
@@ -849,7 +850,7 @@ function AddPaymentForm({
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null)
 
   const customerOptions = useMemo(
-    () => (options?.customers ?? []).map((c) => ({ value: c, label: displayIg(c) })),
+    () => (options?.customers ?? []).map((c) => ({ value: c, label: displayIg(c), meta: options?.customerMobiles?.[c] || undefined })),
     [options],
   )
   const accountOptions = useMemo(
@@ -907,6 +908,7 @@ function AddPaymentForm({
               options={customerOptions}
               placeholder="Customer..."
               allowNewValue
+              searchMeta
             />
           </div>
         </div>
@@ -1033,7 +1035,7 @@ function MobileAddPaymentSheet({
   const [error, setError] = useState<string | null>(null)
 
   const customerOptions = useMemo(
-    () => (options?.customers ?? []).map((c) => ({ value: c, label: displayIg(c) })),
+    () => (options?.customers ?? []).map((c) => ({ value: c, label: displayIg(c), meta: options?.customerMobiles?.[c] || undefined })),
     [options],
   )
   const accountOptions = useMemo(
@@ -1089,6 +1091,7 @@ function MobileAddPaymentSheet({
             options={customerOptions}
             placeholder="Customer..."
             allowNewValue
+            searchMeta
           />
         </div>
         <div className="grid grid-cols-2 gap-3">
