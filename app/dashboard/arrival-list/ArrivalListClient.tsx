@@ -447,7 +447,12 @@ export default function ArrivalListClient() {
         <div className="px-4 py-2.5 border-b border-cream-border border-l-[3px] border-brand bg-gray-50/80">
           <div className="font-bold text-sm text-foreground">CUSTOMER ORDER</div>
         </div>
-        <table className="w-full text-sm border-collapse">
+        {/* table-fixed: locks Event/Store/Receipt/Qty/action to their declared
+            widths regardless of content, so Receipt's truncate actually clips
+            (it silently didn't under auto layout) and Qty/action never get
+            pushed out of view — no horizontal scroll, no wrap. Product has no
+            fixed width (gets whatever's left) and stays nowrap. */}
+        <table className="w-full text-sm border-collapse table-fixed">
           <thead>
             <tr className="border-b border-cream-border bg-gray-50/80">
               <th className="text-left px-4 py-2.5 font-medium text-gray-500 w-44">Event</th>
